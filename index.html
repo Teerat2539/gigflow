@@ -1,0 +1,1765 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="GigFlow" />
+<meta name="application-name" content="GigFlow" />
+<meta id="meta-theme" name="theme-color" content="#F2F2F7" />
+<title>GigFlow</title>
+<link id="favicon" rel="icon" type="image/svg+xml" href="data:," />
+<link id="apple-icon" rel="apple-touch-icon" sizes="180x180" href="data:," />
+
+<script>
+  /* ---------- App icon: white guitar pick on Midnight Indigo squircle + green "confirmed" dot ---------- */
+  (function () {
+    function iconSvg(squircle) {
+      var bg = squircle
+        ? '<path d="M256 0C56 0 0 56 0 256s56 256 256 256 256-56 256-256S456 0 256 0Z" fill="url(#g)"/>'
+        : '<rect width="512" height="512" fill="url(#g)"/>';
+      return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">' +
+        '<defs>' +
+        '<linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#312E81"/><stop offset="1" stop-color="#1E1B4B"/></linearGradient>' +
+        '<linearGradient id="p" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#E0E7FF"/></linearGradient>' +
+        '</defs>' + bg +
+        '<path d="M256 128c80 0 128 27 128 75 0 72-80 154-128 185-48-31-128-113-128-185 0-48 48-75 128-75Z" fill="url(#p)"/>' +
+        '<circle cx="398" cy="114" r="44" fill="#34C759" stroke="#26235E" stroke-width="12"/>' +
+        '</svg>';
+    }
+    window.GIGFLOW_ICON_SVG = iconSvg(true);
+    var fav = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(iconSvg(true));
+    var full = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(iconSvg(false));
+    document.getElementById('favicon').href = fav;
+    // iOS ignores SVG apple-touch-icons, so rasterise a full-bleed 180x180 PNG (iOS applies its own corner mask).
+    document.getElementById('apple-icon').href = full;
+    var img = new Image();
+    img.onload = function () {
+      try {
+        var c = document.createElement('canvas'); c.width = 180; c.height = 180;
+        c.getContext('2d').drawImage(img, 0, 0, 180, 180);
+        document.getElementById('apple-icon').href = c.toDataURL('image/png');
+      } catch (e) {}
+    };
+    img.src = full;
+
+    // Apply theme before first paint (no flash)
+    try {
+      var m = localStorage.getItem('gigflow.theme') || 'auto';
+      var dark = m === 'dark' || (m === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      if (dark) document.documentElement.classList.add('dark');
+    } catch (e) {}
+  })();
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" rel="stylesheet" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: { extend: { fontFamily: { sans: ['Inter', '"IBM Plex Sans Thai"', '-apple-system', 'system-ui', 'sans-serif'] } } }
+  };
+</script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+
+<style>
+  html, body { -webkit-tap-highlight-color: transparent; }
+  body { font-family: 'Inter', 'IBM Plex Sans Thai', -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased; overscroll-behavior-y: none; }
+  .material-symbols-rounded { font-variation-settings: 'FILL' 0, 'wght' 500, 'GRAD' 0, 'opsz' 24; font-size: 22px; line-height: 1; user-select: none; display: inline-block; vertical-align: middle; }
+  .ms-fill { font-variation-settings: 'FILL' 1, 'wght' 500, 'GRAD' 0, 'opsz' 24; }
+  .tnum { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { scrollbar-width: none; }
+  @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes popIn { from { opacity: 0; transform: translateY(12px) scale(.96); } to { opacity: 1; transform: none; } }
+  .anim-sheet { animation: sheetUp .38s cubic-bezier(.32,.72,0,1); }
+  .anim-fade { animation: fadeIn .25s ease-out; }
+  .anim-pop { animation: popIn .3s cubic-bezier(.32,.72,0,1); }
+  input, textarea, select { font: inherit; }
+  input[type="date"], input[type="time"] { -webkit-appearance: none; appearance: none; min-height: 1.5em; background: transparent; }
+  input[type="date"]::-webkit-date-and-time-value, input[type="time"]::-webkit-date-and-time-value { text-align: right; }
+  .dark input[type="date"], .dark input[type="time"] { color-scheme: dark; }
+  /* status text colours (accessible on light & dark) */
+  .st-confirmed { color: #248A3D; } .dark .st-confirmed { color: #30D158; }
+  .st-pending   { color: #9A7300; } .dark .st-pending   { color: #FFD60A; }
+  .st-issue     { color: #C93400; } .dark .st-issue     { color: #FF9F0A; }
+  .st-cancelled { color: #D70015; } .dark .st-cancelled { color: #FF453A; }
+  .safe-top { padding-top: calc(env(safe-area-inset-top) + 14px); }
+  .tabbar-pad { padding-bottom: calc(env(safe-area-inset-bottom) + 6px); }
+  .page-pad { padding-bottom: calc(env(safe-area-inset-bottom) + 110px); }
+  .sheet-pad { padding-bottom: calc(env(safe-area-inset-bottom) + 16px); }
+</style>
+</head>
+<body class="bg-[#F2F2F7] dark:bg-black text-black dark:text-white">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+/* =====================================================================
+   CONSTANTS
+   ===================================================================== */
+const KEY_GIGS = 'gigflow.gigs.v1';
+const KEY_VENUES = 'gigflow.venues.v1';
+const KEY_THEME = 'gigflow.theme';
+
+const STATUS = {
+  confirmed: { label: 'คอนเฟิร์ม',   color: '#34C759', emoji: '✅', icon: 'check_circle' },
+  pending:   { label: 'รอคอนเฟิร์ม', color: '#FFCC00', emoji: '⏳', icon: 'hourglass_top' },
+  issue:     { label: 'ติดปัญหา',    color: '#FF9500', emoji: '⚠️', icon: 'error' },
+  cancelled: { label: 'แคนเซิล',     color: '#FF3B30', emoji: '❌', icon: 'cancel' },
+};
+const STATUS_ORDER = ['confirmed', 'pending', 'issue', 'cancelled'];
+const ACTIVE = new Set(['confirmed', 'pending', 'issue']);   // ใช้เช็กคิวชน
+const INCOME = new Set(['confirmed', 'issue']);              // นับเป็นรายได้ (pending = คาดการณ์, cancelled = ไม่นับ)
+const SERIES_FIELDS = ['startTime', 'endTime', 'venueName', 'bandName', 'status', 'baseFee', 'mapsUrl', 'travelMinutes', 'notes'];
+
+const TH_DAYS = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
+const TH_DAYS_SHORT = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
+const TH_DAYS_MINI = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
+const TH_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
+const TH_MONTHS_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+/* =====================================================================
+   DATE / TIME HELPERS  (ทุกอย่างคิดเป็น "วันที่ท้องถิ่น" แบบ YYYY-MM-DD → ไม่มีปัญหา timezone/DST)
+   ===================================================================== */
+const pad = (n) => String(n).padStart(2, '0');
+const toDateStr = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const todayStr = () => toDateStr(new Date());
+const isValidDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.UTC(...s.split('-').map(Number)));
+const isValidTime = (s) => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
+const dayNum = (s) => { const [y, m, d] = s.split('-').map(Number); return Math.round(Date.UTC(y, m - 1, d) / 864e5); };
+const fromDayNum = (n) => { const d = new Date(n * 864e5); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`; };
+const addDays = (s, n) => fromDayNum(dayNum(s) + n);
+const weekdayOf = (s) => new Date(dayNum(s) * 864e5).getUTCDay();
+const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+const isOvernight = (g) => toMin(g.endTime) <= toMin(g.startTime);
+/** ช่วงเวลาแบบ "นาทีสัมบูรณ์" — งานข้ามเที่ยงคืนจะนับเวลาเลิกเป็นวันถัดไป แต่ยังเป็นงานของคืนวันที่เริ่มเล่น */
+const gigRange = (g) => {
+  const base = dayNum(g.date) * 1440;
+  const s = base + toMin(g.startTime);
+  let e = base + toMin(g.endTime);
+  if (e <= s) e += 1440;
+  return [s, e];
+};
+const nowAbs = () => { const d = new Date(); return dayNum(toDateStr(d)) * 1440 + d.getHours() * 60 + d.getMinutes(); };
+const absToParts = (abs) => { const day = Math.floor(abs / 1440); const m = abs - day * 1440; return { date: fromDayNum(day), h: Math.floor(m / 60), m: m % 60 }; };
+const absToTime = (abs) => { const p = absToParts(abs); return `${pad(p.h)}:${pad(p.m)}`; };
+const cmpGig = (a, b) => gigRange(a)[0] - gigRange(b)[0];
+const fmtDur = (min) => { min = Math.max(0, Math.round(min)); const h = Math.floor(min / 60), m = min % 60; if (!h) return `${m} นาที`; return m ? `${h} ชม. ${m} นาที` : `${h} ชม.`; };
+const fmtDateShort = (s) => { const [, m, d] = s.split('-').map(Number); return `${TH_DAYS_SHORT[weekdayOf(s)]} ${d} ${TH_MONTHS_SHORT[m - 1]}`; };
+const fmtDateLong = (s) => { const [y, m, d] = s.split('-').map(Number); return `วัน${TH_DAYS[weekdayOf(s)]}ที่ ${d} ${TH_MONTHS[m - 1]} ${y + 543}`; };
+const relDay = (s) => { const diff = dayNum(s) - dayNum(todayStr()); if (diff === 0) return 'วันนี้'; if (diff === 1) return 'พรุ่งนี้'; if (diff === -1) return 'เมื่อวาน'; return fmtDateShort(s); };
+const monthLabel = (y, m) => `${TH_MONTHS[m - 1]} ${y + 543}`;
+const daysInMonth = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+
+/* =====================================================================
+   MONEY HELPERS  (รวมเงินด้วยหน่วยสตางค์ที่เป็นจำนวนเต็ม → ไม่มี floating-point error)
+   ===================================================================== */
+const toSatang = (v) => Math.round((Number(v) || 0) * 100);
+const sumMoney = (arr, f) => arr.reduce((acc, x) => acc + toSatang(f(x)), 0) / 100;
+const addMoney = (...vals) => vals.reduce((a, v) => a + toSatang(v), 0) / 100;
+const subMoney = (a, b) => (toSatang(a) - toSatang(b)) / 100;
+const nf = new Intl.NumberFormat('th-TH', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const fmtMoney = (v) => `฿${nf.format(Number(v) || 0)}`;
+const parseMoney = (s) => { const n = parseFloat(String(s ?? '').replace(/[,฿\s]/g, '')); return isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0; };
+const parseIntSafe = (s, def = 0) => { const n = parseInt(String(s ?? '').replace(/[^\d]/g, ''), 10); return isFinite(n) ? Math.max(0, n) : def; };
+
+/* =====================================================================
+   GENERAL HELPERS
+   ===================================================================== */
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+const isHttpUrl = (u) => /^https?:\/\//i.test((u || '').trim());
+
+function normalizeGig(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const g = {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : uid(),
+    date: String(raw.date || ''),
+    startTime: String(raw.startTime || ''),
+    endTime: String(raw.endTime || ''),
+    venueName: String(raw.venueName || '').trim(),
+    status: STATUS[raw.status] ? raw.status : 'pending',
+    bandName: String(raw.bandName || '').trim(),
+    recurringGroupId: raw.recurringGroupId ? String(raw.recurringGroupId) : null,
+    baseFee: parseMoney(raw.baseFee),
+    mapsUrl: isHttpUrl(raw.mapsUrl) ? String(raw.mapsUrl).trim() : '',
+    travelMinutes: raw.travelMinutes === undefined || raw.travelMinutes === null || raw.travelMinutes === '' ? 30 : parseIntSafe(raw.travelMinutes, 30),
+    notes: String(raw.notes || ''),
+    tips: parseMoney(raw.tips),
+    isPaid: !!raw.isPaid,
+    createdAt: Number(raw.createdAt) || Date.now(),
+    updatedAt: Number(raw.updatedAt) || Date.now(),
+  };
+  if (!isValidDate(g.date) || !isValidTime(g.startTime) || !isValidTime(g.endTime) || !g.venueName) return null;
+  return g;
+}
+
+function loadJSON(key, fallback) {
+  try { const v = JSON.parse(localStorage.getItem(key)); return v ?? fallback; } catch (e) { return fallback; }
+}
+const loadGigs = () => { const arr = loadJSON(KEY_GIGS, []); return Array.isArray(arr) ? arr.map(normalizeGig).filter(Boolean) : []; };
+const loadVenues = () => { const v = loadJSON(KEY_VENUES, {}); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; };
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch (e) {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) { return false; }
+}
+
+/* =====================================================================
+   CONFLICT & TRAVEL BUFFER DETECTOR
+   ===================================================================== */
+function findIssues(cand, gigs, excludeIds = new Set()) {
+  const res = { conflicts: [], tight: [] };
+  if (!cand || cand.status === 'cancelled') return res;
+  if (!isValidDate(cand.date) || !isValidTime(cand.startTime) || !isValidTime(cand.endTime)) return res;
+  const [s, e] = gigRange(cand);
+  for (const g of gigs) {
+    if (excludeIds.has(g.id) || !ACTIVE.has(g.status)) continue;
+    const [gs, ge] = gigRange(g);
+    if (s < ge && gs < e) {
+      res.conflicts.push({ gig: g, date: cand.date });
+    } else if (ge <= s) {
+      const gap = s - ge, need = Number(cand.travelMinutes) || 0;      // งานอื่นจบก่อน → ต้องเดินทางมางานนี้
+      if (gap < need) res.tight.push({ gig: g, gap, need, dir: 'before', date: cand.date });
+    } else if (e <= gs) {
+      const gap = gs - e, need = Number(g.travelMinutes) || 0;          // งานนี้จบก่อน → ต้องเดินทางไปงานอื่น
+      if (gap < need) res.tight.push({ gig: g, gap, need, dir: 'after', date: cand.date });
+    }
+  }
+  return res;
+}
+
+function genRecurringDates(startDate, days, weeks) {
+  const set = new Set(days);
+  const out = [];
+  for (let i = 0; i < weeks * 7; i++) {
+    const d = addDays(startDate, i);
+    if (set.has(weekdayOf(d))) out.push(d);
+  }
+  return out;
+}
+
+/* =====================================================================
+   GOOGLE MAPS & CALENDAR
+   ===================================================================== */
+function placeQuery(g) {
+  const url = (g.mapsUrl || '').trim();
+  if (isHttpUrl(url)) {
+    try {
+      const u = new URL(url);
+      const q = u.searchParams.get('query') || u.searchParams.get('q') || u.searchParams.get('destination');
+      if (q) return q;
+      const m = u.pathname.match(/\/place\/([^/]+)/);
+      if (m) return decodeURIComponent(m[1].replace(/\+/g, ' '));
+      const c = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+      if (c) return `${c[1]},${c[2]}`;
+    } catch (e) {}
+  }
+  return g.venueName;
+}
+const mapsPlaceUrl = (g) => (isHttpUrl(g.mapsUrl) ? g.mapsUrl.trim() : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(g.venueName)}`);
+function mapsDirUrl(from, to) {
+  const p = new URLSearchParams({ api: '1' });
+  if (from) p.set('origin', placeQuery(from));
+  p.set('destination', placeQuery(to));
+  p.set('travelmode', 'driving');
+  return `https://www.google.com/maps/dir/?${p.toString()}`;
+}
+function calendarUrl(g) {
+  const [s, e] = gigRange(g);
+  const fmt = (abs) => { const p = absToParts(abs); return `${p.date.replace(/-/g, '')}T${pad(p.h)}${pad(p.m)}00`; };
+  const details = [
+    `สถานะ: ${STATUS[g.status].emoji} ${STATUS[g.status].label}`,
+    g.bandName ? `วง: ${g.bandName}` : null,
+    g.baseFee ? `ค่าตัว: ${fmtMoney(g.baseFee)}` : null,
+    g.travelMinutes ? `เผื่อเก็บของ+เดินทาง: ${fmtDur(g.travelMinutes)} (ออกก่อน ${absToTime(s - g.travelMinutes)})` : null,
+    g.notes ? `\nโน้ต:\n${g.notes}` : null,
+    isHttpUrl(g.mapsUrl) ? `\nแผนที่: ${g.mapsUrl}` : null,
+    '\n— บันทึกจาก GigFlow',
+  ].filter(Boolean).join('\n');
+  const p = new URLSearchParams({
+    action: 'TEMPLATE',
+    text: `🎸 ${g.bandName ? g.bandName + ' @ ' : ''}${g.venueName}`,
+    dates: `${fmt(s)}/${fmt(e)}`,
+    details,
+    location: placeQuery(g),
+  });
+  try { const tz = Intl.DateTimeFormat().resolvedOptions().timeZone; if (tz) p.set('ctz', tz); } catch (e) {}
+  return `https://calendar.google.com/calendar/render?${p.toString()}`;
+}
+const openUrl = (url) => window.open(url, '_blank', 'noopener,noreferrer');
+
+/* =====================================================================
+   LINE TEXT
+   ===================================================================== */
+function buildLineText(gigs, from, to, label) {
+  const list = gigs.filter((g) => g.date >= from && g.date <= to).sort(cmpGig);
+  const [fy, fm, fd] = from.split('-').map(Number);
+  const [ty, tm, td] = to.split('-').map(Number);
+  const range = fy === ty && fm === tm
+    ? `${fd}–${td} ${TH_MONTHS_SHORT[tm - 1]} ${String(ty + 543).slice(2)}`
+    : `${fd} ${TH_MONTHS_SHORT[fm - 1]} – ${td} ${TH_MONTHS_SHORT[tm - 1]} ${String(ty + 543).slice(2)}`;
+  const L = [`🎸 คิวงาน${label}`, `🗓 ${range}`, '━━━━━━━━━━━━━━'];
+  if (!list.length) L.push('', 'ยังไม่มีคิวงานในช่วงนี้ 🙏');
+  let cur = null;
+  for (const g of list) {
+    if (g.date !== cur) { cur = g.date; L.push('', `📅 ${fmtDateShort(g.date)}`); }
+    const st = STATUS[g.status];
+    L.push(`${st.emoji} ${g.startTime}–${g.endTime}${isOvernight(g) ? ' (ข้ามคืน)' : ''} | ${g.venueName}${g.bandName ? ` (${g.bandName})` : ''}${g.status === 'cancelled' ? ' — ยกเลิก' : g.status === 'pending' ? ' — รอคอนเฟิร์ม' : g.status === 'issue' ? ' — ติดปัญหา' : ''}`);
+  }
+  const c = (s) => list.filter((g) => g.status === s).length;
+  L.push('', '━━━━━━━━━━━━━━');
+  L.push(`✅ คอนเฟิร์ม ${c('confirmed')} · ⏳ รอ ${c('pending')} · ⚠️ ติดปัญหา ${c('issue')}${c('cancelled') ? ` · ❌ แคนเซิล ${c('cancelled')}` : ''}`);
+  L.push(`รวม ${list.length - c('cancelled')} งาน 🎶`);
+  return L.join('\n');
+}
+
+/* =====================================================================
+   STATS
+   ===================================================================== */
+function computeStats(list) {
+  const today = todayStr();
+  const income = list.filter((g) => INCOME.has(g.status));
+  const pending = list.filter((g) => g.status === 'pending');
+  const fee = sumMoney(income, (g) => g.baseFee);
+  const tips = sumMoney(income, (g) => g.tips);
+  const total = addMoney(fee, tips);
+  const unpaidGigs = income.filter((g) => !g.isPaid && g.date <= today && (g.baseFee > 0 || g.tips > 0));
+  const outstanding = unpaidGigs.reduce((a, g) => a + toSatang(g.baseFee) + toSatang(g.tips), 0) / 100;
+  const forecast = sumMoney(pending, (g) => g.baseFee);
+  const minutes = income.reduce((a, g) => { const [s, e] = gigRange(g); return a + (e - s); }, 0);
+  const avg = income.length ? Math.round(toSatang(total) / income.length) / 100 : 0;
+  return { income, pending, fee, tips, total, unpaidGigs, outstanding, forecast, minutes, avg, cancelled: list.filter((g) => g.status === 'cancelled').length };
+}
+function breakdown(incomeGigs, keyFn) {
+  const map = new Map();
+  for (const g of incomeGigs) {
+    const k = keyFn(g);
+    const cur = map.get(k) || { name: k, count: 0, satang: 0 };
+    cur.count += 1; cur.satang += toSatang(g.baseFee) + toSatang(g.tips);
+    map.set(k, cur);
+  }
+  const totalS = [...map.values()].reduce((a, x) => a + x.satang, 0);
+  return [...map.values()].map((x) => ({ ...x, amount: x.satang / 100, pct: totalS ? (x.satang / totalS) * 100 : 0 })).sort((a, b) => b.satang - a.satang || b.count - a.count);
+}
+
+/* =====================================================================
+   DEMO DATA (สร้างจากวันที่ปัจจุบัน)
+   ===================================================================== */
+function makeDemo() {
+  const t = todayStr();
+  const now = Date.now();
+  const V = {
+    blue:   { venueName: 'Blue Moon Jazz Bar',    mapsUrl: 'https://www.google.com/maps/search/?api=1&query=Thong+Lo+Bangkok',      travelMinutes: 30, baseFee: 2500 },
+    roof:   { venueName: 'Rooftop 39 Sky Lounge', mapsUrl: 'https://www.google.com/maps/search/?api=1&query=Silom+Bangkok',          travelMinutes: 30, baseFee: 1800 },
+    river:  { venueName: 'Riverside Bistro',      mapsUrl: 'https://www.google.com/maps/search/?api=1&query=Charoen+Krung+Bangkok', travelMinutes: 30, baseFee: 2000 },
+    neon:   { venueName: 'Neon Garden Ari',       mapsUrl: 'https://www.google.com/maps/search/?api=1&query=Ari+Bangkok',            travelMinutes: 45, baseFee: 2200 },
+    oldtown:{ venueName: 'The Old Town Pub',      mapsUrl: 'https://www.google.com/maps/search/?api=1&query=Khaosan+Road+Bangkok',  travelMinutes: 40, baseFee: 1500 },
+  };
+  const tipsCycle = [450, 620, 0, 380, 900, 250, 700, 520, 0, 340];
+  let ti = 0;
+  const gigs = [];
+  const mk = (v, date, startTime, endTime, extra = {}) => {
+    const past = date < t;
+    const g = {
+      id: uid(), date, startTime, endTime, ...v, bandName: '', status: 'confirmed', recurringGroupId: null,
+      notes: '', tips: past ? tipsCycle[ti++ % tipsCycle.length] : 0, isPaid: past, createdAt: now, updatedAt: now, ...extra,
+    };
+    gigs.push(g);
+    return g;
+  };
+  // ชุดร้านประจำ 1: Blue Moon ทุกศุกร์-เสาร์ 21:00–23:00 (ย้อนหลัง 5 สัปดาห์ – ล่วงหน้า 7 สัปดาห์)
+  const g1 = uid();
+  const start1 = addDays(t, -35);
+  genRecurringDates(start1, [5, 6], 12).filter((d) => d !== t).forEach((d) =>
+    mk(V.blue, d, '21:00', '23:00', { bandName: 'The Midnight Trio', recurringGroupId: g1, notes: 'แต่งกาย: โทนดำ\nเซ็ต 2 ช่วง ช่วงละ 50 นาที' }));
+  // ชุดร้านประจำ 2: Rooftop ทุกศุกร์ 23:30–01:00 (ข้ามเที่ยงคืน — ต้องไม่ชนกับเสาร์ 21:00)
+  const g2 = uid();
+  genRecurringDates(addDays(t, -28), [5], 10).filter((d) => d !== t).forEach((d) =>
+    mk(V.roof, d, '23:30', '01:00', { bandName: 'Solo Acoustic', recurringGroupId: g2, notes: 'ติดต่อผู้จัดการร้าน: คุณบี 08x-xxx-xxxx' }));
+  // งานวันนี้ 2 งาน (วิ่งรอก) — เว้นช่วง 30 นาที แต่ต้องเดินทาง 45 นาที → แจ้งเตือนสีส้ม
+  mk(V.river, t, '19:00', '21:00', { bandName: 'Saxy Duo', notes: 'เพลงช้าช่วงดินเนอร์ คีย์ C/F' });
+  mk(V.neon, t, '21:30', '23:30', { bandName: 'The Midnight Trio', status: 'pending', notes: 'รอร้านยืนยันเวลาอีกครั้ง' });
+  // งานจร
+  mk(V.oldtown, addDays(t, 3), '20:00', '22:00', { bandName: 'Saxy Duo', status: 'issue', notes: 'ยังไม่ได้ยืนยันเรื่องเครื่องเสียง/ไมค์' });
+  mk(V.neon, addDays(t, 9), '20:00', '22:30', { bandName: 'The Midnight Trio', status: 'pending' });
+  mk(V.river, addDays(t, 11), '18:30', '20:30', { bandName: 'Saxy Duo', status: 'cancelled', notes: 'ร้านปิดปรับปรุง' });
+  mk(V.river, addDays(t, -6), '19:00', '21:00', { bandName: 'Saxy Duo' });
+  mk(V.oldtown, addDays(t, -10), '20:00', '22:00', { bandName: 'Saxy Duo' });
+  mk(V.neon, addDays(t, -17), '21:00', '23:30', { bandName: 'The Midnight Trio' });
+  mk(V.river, addDays(t, -24), '19:00', '21:00', { bandName: 'Saxy Duo', status: 'cancelled', tips: 0 });
+  mk(V.oldtown, addDays(t, -40), '20:00', '22:00', { bandName: 'Saxy Duo' });
+  // งานที่ผ่านมาแล้วแต่ยังค้างจ่าย
+  const pastGigs = gigs.filter((g) => g.date < t && INCOME.has(g.status)).sort(cmpGig);
+  pastGigs.slice(-3).forEach((g) => { g.isPaid = false; });
+  gigs.forEach((g) => { if (g.status === 'cancelled') { g.tips = 0; g.isPaid = false; } });
+  const venues = {};
+  Object.values(V).forEach((v) => {
+    const last = gigs.filter((g) => g.venueName === v.venueName).sort(cmpGig).pop();
+    venues[v.venueName] = { startTime: last.startTime, endTime: last.endTime, baseFee: v.baseFee, mapsUrl: v.mapsUrl, travelMinutes: v.travelMinutes, bandName: last.bandName, updatedAt: now };
+  });
+  return { gigs, venues };
+}
+
+/* =====================================================================
+   HOOKS
+   ===================================================================== */
+function useTheme() {
+  const [mode, setMode] = useState(() => { try { return localStorage.getItem(KEY_THEME) || 'auto'; } catch (e) { return 'auto'; } });
+  const [isDark, setIsDark] = useState(document.documentElement.classList.contains('dark'));
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const apply = () => {
+      const dark = mode === 'dark' || (mode === 'auto' && mq.matches);
+      document.documentElement.classList.toggle('dark', dark);
+      document.getElementById('meta-theme')?.setAttribute('content', dark ? '#000000' : '#F2F2F7');
+      setIsDark(dark);
+    };
+    apply();
+    try { localStorage.setItem(KEY_THEME, mode); } catch (e) {}
+    mq.addEventListener ? mq.addEventListener('change', apply) : mq.addListener(apply);
+    return () => { mq.removeEventListener ? mq.removeEventListener('change', apply) : mq.removeListener(apply); };
+  }, [mode]);
+  return [mode, setMode, isDark];
+}
+function useNow() {
+  const [n, setN] = useState(nowAbs());
+  useEffect(() => { const id = setInterval(() => setN(nowAbs()), 30000); return () => clearInterval(id); }, []);
+  return n;
+}
+
+/* =====================================================================
+   UI PRIMITIVES
+   ===================================================================== */
+const Icon = ({ name, fill, className = '', size, style }) => (
+  <span className={`material-symbols-rounded ${fill ? 'ms-fill' : ''} ${className}`} style={{ ...(size ? { fontSize: size } : {}), ...style }} aria-hidden="true">{name}</span>
+);
+const Card = ({ children, className = '' }) => <div className={`bg-white dark:bg-[#1C1C1E] rounded-[20px] ${className}`}>{children}</div>;
+const SectionTitle = ({ children, right }) => (
+  <div className="flex items-end justify-between px-5 mt-7 mb-2">
+    <h2 className="text-[20px] font-bold tracking-tight">{children}</h2>
+    {right}
+  </div>
+);
+const Sep = () => <div className="h-px bg-black/[0.08] dark:bg-white/[0.1] ml-4" />;
+const AppLogo = ({ size = 32 }) => (
+  <img src={'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(window.GIGFLOW_ICON_SVG)} width={size} height={size} alt="GigFlow" className="shrink-0" style={{ filter: 'drop-shadow(0 2px 6px rgba(30,27,75,.35))' }} />
+);
+
+function Segmented({ options, value, onChange, className = '' }) {
+  return (
+    <div className={`flex p-[2px] rounded-[10px] bg-[#767680]/[0.12] dark:bg-[#767680]/[0.24] ${className}`}>
+      {options.map((o) => (
+        <button key={o.value} type="button" onClick={() => onChange(o.value)}
+          className={`flex-1 h-8 px-2 rounded-[8px] text-[13px] font-semibold whitespace-nowrap transition-all duration-200 flex items-center justify-center gap-1 ${value === o.value ? 'bg-white dark:bg-[#636366] shadow-[0_3px_8px_rgba(0,0,0,0.12),0_3px_1px_rgba(0,0,0,0.04)] text-black dark:text-white' : 'text-black/60 dark:text-white/60'}`}>
+          {o.icon && <Icon name={o.icon} size={16} />}{o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Switch({ checked, onChange, label }) {
+  return (
+    <button type="button" role="switch" aria-checked={checked} aria-label={label} onClick={() => onChange(!checked)}
+      className={`relative w-[51px] h-[31px] shrink-0 rounded-full transition-colors duration-200 ${checked ? 'bg-[#34C759]' : 'bg-[#787880]/[0.2] dark:bg-[#787880]/[0.36]'}`}>
+      <span className={`absolute top-[2px] left-[2px] w-[27px] h-[27px] rounded-full bg-white shadow-[0_3px_8px_rgba(0,0,0,0.15),0_3px_1px_rgba(0,0,0,0.06)] transition-transform duration-200 ${checked ? 'translate-x-[20px]' : ''}`} />
+    </button>
+  );
+}
+
+function StatusBadge({ status, small }) {
+  const st = STATUS[status];
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full font-semibold st-${status} ${small ? 'text-[11px] px-2 py-[2px]' : 'text-[12px] px-2.5 py-[3px]'}`} style={{ background: st.color + '26' }}>
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: st.color }} />{st.label}
+    </span>
+  );
+}
+
+function ThemeToggle({ mode, setMode }) {
+  const opts = [{ v: 'auto', i: 'brightness_auto', t: 'อัตโนมัติ' }, { v: 'light', i: 'light_mode', t: 'สว่าง' }, { v: 'dark', i: 'dark_mode', t: 'มืด' }];
+  return (
+    <div className="flex p-[2px] rounded-full bg-[#767680]/[0.12] dark:bg-[#767680]/[0.24]" role="radiogroup" aria-label="ธีม">
+      {opts.map((o) => (
+        <button key={o.v} role="radio" aria-checked={mode === o.v} title={o.t} onClick={() => setMode(o.v)}
+          className={`w-8 h-7 rounded-full flex items-center justify-center transition-all ${mode === o.v ? 'bg-white dark:bg-[#636366] shadow-sm text-[#5856D6] dark:text-white' : 'text-[#8E8E93]'}`}>
+          <Icon name={o.i} size={17} fill={mode === o.v} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function PageHeader({ title, subtitle, right, logo }) {
+  return (
+    <header className="safe-top px-5 pb-2 flex items-end justify-between gap-3">
+      <div className="min-w-0">
+        <div className="text-[13px] font-semibold text-[#8E8E93] truncate">{subtitle}</div>
+        <h1 className="text-[34px] font-bold tracking-tight leading-[1.15] flex items-center gap-2.5">{logo}{title}</h1>
+      </div>
+      <div className="flex items-center gap-2 pb-1.5 shrink-0">{right}</div>
+    </header>
+  );
+}
+
+function Sheet({ onClose, children, z = 50, full }) {
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => { document.body.style.overflow = prev; window.removeEventListener('keydown', onKey); };
+  }, []);
+  return (
+    <div className="fixed inset-0 flex items-end justify-center" style={{ zIndex: z }}>
+      <div className="absolute inset-0 bg-black/40 anim-fade" onClick={onClose} />
+      <div className={`relative w-full max-w-md ${full ? 'h-[94vh]' : 'max-h-[94vh]'} flex flex-col bg-[#F2F2F7] dark:bg-[#1C1C1E] rounded-t-[14px] shadow-2xl anim-sheet overflow-hidden`}>
+        <div className="absolute top-[6px] left-1/2 -translate-x-1/2 w-9 h-[5px] rounded-full bg-[#3C3C43]/30 dark:bg-white/30 z-10" />
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ActionSheet({ config, onClose }) {
+  if (!config) return null;
+  return (
+    <div className="fixed inset-0 z-[80] flex items-end justify-center">
+      <div className="absolute inset-0 bg-black/40 anim-fade" onClick={onClose} />
+      <div className="relative w-full max-w-md px-2 sheet-pad anim-sheet">
+        <div className="rounded-[14px] overflow-hidden bg-white/85 dark:bg-[#2C2C2E]/85 backdrop-blur-2xl">
+          {(config.title || config.message) && (
+            <div className="px-6 py-4 text-center border-b border-black/10 dark:border-white/10">
+              {config.title && <div className="text-[13px] font-semibold text-[#8E8E93]">{config.title}</div>}
+              {config.message && <div className="text-[13px] text-[#8E8E93] mt-1 leading-snug">{config.message}</div>}
+            </div>
+          )}
+          {config.actions.map((a, i) => (
+            <button key={i} onClick={() => { onClose(); a.onClick(); }}
+              className={`w-full min-h-[57px] px-4 text-[18px] active:bg-black/5 dark:active:bg-white/10 ${i ? 'border-t border-black/10 dark:border-white/10' : ''} ${a.destructive ? 'text-[#FF3B30]' : 'text-[#007AFF] dark:text-[#0A84FF]'} ${a.bold ? 'font-semibold' : ''}`}>
+              {a.label}
+            </button>
+          ))}
+        </div>
+        <button onClick={onClose} className="mt-2 w-full h-[57px] rounded-[14px] bg-white dark:bg-[#2C2C2E] text-[18px] font-semibold text-[#007AFF] dark:text-[#0A84FF] active:bg-[#E5E5EA] dark:active:bg-[#3A3A3C]">
+          ยกเลิก
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Toast({ toast }) {
+  if (!toast) return null;
+  return (
+    <div className="fixed left-1/2 -translate-x-1/2 z-[90] pointer-events-none" style={{ bottom: 'calc(env(safe-area-inset-bottom) + 100px)' }}>
+      <div key={toast.id} className="anim-pop flex items-center gap-2 px-4 py-2.5 rounded-full bg-[#1C1C1E]/90 dark:bg-white/90 text-white dark:text-black text-[14px] font-medium shadow-xl backdrop-blur-xl whitespace-nowrap">
+        <Icon name={toast.icon || 'check_circle'} fill size={18} className={toast.icon === 'error' ? 'text-[#FF453A]' : 'text-[#34C759]'} />{toast.msg}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Gig row (shared) ---------- */
+function GigRow({ gig, onClick, now, showDate = true }) {
+  const st = STATUS[gig.status];
+  const cancelled = gig.status === 'cancelled';
+  const [s, e] = gigRange(gig);
+  const live = !cancelled && now >= s && now < e;
+  const [, m, d] = gig.date.split('-').map(Number);
+  return (
+    <button onClick={onClick} className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-black/[0.04] dark:active:bg-white/[0.06] transition-colors">
+      {showDate ? (
+        <div className="w-12 shrink-0 text-center rounded-[12px] py-1.5 bg-[#F2F2F7] dark:bg-[#2C2C2E] relative">
+          <div className={`text-[11px] font-semibold ${weekdayOf(gig.date) === 0 ? 'text-[#FF3B30]' : 'text-[#8E8E93]'}`}>{TH_DAYS_SHORT[weekdayOf(gig.date)]}</div>
+          <div className="text-[20px] font-bold leading-none tnum my-[1px]">{d}</div>
+          <div className="text-[10px] text-[#8E8E93]">{TH_MONTHS_SHORT[m - 1]}</div>
+          <span className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white dark:border-[#1C1C1E]" style={{ background: st.color }} />
+        </div>
+      ) : (
+        <div className="w-1 self-stretch rounded-full" style={{ background: st.color }} />
+      )}
+      <div className="flex-1 min-w-0">
+        <div className={`flex items-center gap-1.5 text-[16px] font-semibold ${cancelled ? 'line-through decoration-[#FF3B30]/70 text-[#8E8E93]' : ''}`}>
+          <span className="truncate">{gig.venueName}</span>
+          {gig.recurringGroupId && <Icon name="repeat" size={15} className="text-[#8E8E93] shrink-0" />}
+        </div>
+        <div className={`text-[13px] text-[#8E8E93] flex items-center gap-1 tnum mt-0.5 ${cancelled ? 'line-through' : ''}`}>
+          <span>{gig.startTime}–{gig.endTime}</span>
+          {isOvernight(gig) && <span className="inline-flex items-center text-[10px] font-bold px-1 rounded bg-[#5856D6]/15 text-[#5856D6] dark:text-[#A5A3FF]"><Icon name="bedtime" size={11} />+1</span>}
+          {gig.bandName && <span className="truncate">· {gig.bandName}</span>}
+        </div>
+      </div>
+      <div className="text-right shrink-0 flex flex-col items-end gap-1">
+        {live ? (
+          <span className="text-[11px] font-bold text-white bg-[#FF3B30] rounded-full px-2 py-[2px] flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />LIVE</span>
+        ) : <StatusBadge status={gig.status} small />}
+        {(gig.baseFee > 0 || gig.tips > 0) && (
+          <div className={`text-[13px] font-semibold tnum flex items-center gap-1 ${cancelled ? 'text-[#8E8E93] line-through' : ''}`}>
+            {!cancelled && INCOME.has(gig.status) && gig.date <= todayStr() && <Icon name={gig.isPaid ? 'check_circle' : 'schedule'} size={14} fill className={gig.isPaid ? 'text-[#34C759]' : 'text-[#FF9500]'} />}
+            {fmtMoney(addMoney(gig.baseFee, gig.tips))}
+          </div>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function EmptyState({ icon, title, text, children }) {
+  return (
+    <div className="text-center px-8 py-10">
+      <div className="mx-auto w-16 h-16 rounded-[20px] bg-[#5856D6]/10 flex items-center justify-center mb-3"><Icon name={icon} size={32} className="text-[#5856D6] dark:text-[#A5A3FF]" /></div>
+      <div className="text-[17px] font-semibold">{title}</div>
+      {text && <div className="text-[14px] text-[#8E8E93] mt-1">{text}</div>}
+      {children && <div className="mt-4 flex flex-col gap-2 items-center">{children}</div>}
+    </div>
+  );
+}
+
+/* =====================================================================
+   HOME
+   ===================================================================== */
+function TodayWidget({ gigs, now, onEdit, onAdd, onDemo }) {
+  const today = todayStr();
+  const yest = addDays(today, -1);
+  const active = gigs.filter((g) => g.status !== 'cancelled');
+  let day = null;
+  if (active.some((g) => g.date === yest && gigRange(g)[1] > now)) day = yest;      // งานกะดึกเมื่อคืนยังเล่นอยู่
+  else if (active.some((g) => g.date === today)) day = today;
+  else day = active.filter((g) => g.date > today).sort(cmpGig)[0]?.date || null;
+
+  if (!day) {
+    return (
+      <Card className="mx-4 overflow-hidden">
+        <EmptyState icon="music_note" title="ยังไม่มีคิวงานที่จะถึง" text="เพิ่มคิวแรกของคุณ หรือโหลดข้อมูลตัวอย่างเพื่อทดลองใช้">
+          <button onClick={() => onAdd()} className="h-11 px-6 rounded-full bg-[#5856D6] text-white font-semibold active:opacity-80">+ เพิ่มคิวงาน</button>
+          <button onClick={onDemo} className="h-9 px-4 text-[#5856D6] dark:text-[#A5A3FF] font-semibold text-[15px]">โหลดข้อมูลตัวอย่าง</button>
+        </EmptyState>
+      </Card>
+    );
+  }
+
+  const dayGigs = active.filter((g) => g.date === day).sort(cmpGig);
+  const isNowDay = day === today || day === yest;
+  let focusIdx = 0;
+  if (isNowDay) { const i = dayGigs.findIndex((g) => gigRange(g)[1] > now); focusIdx = i === -1 ? dayGigs.length - 1 : i; }
+  const focus = dayGigs[focusIdx];
+  const [fs, fe] = gigRange(focus);
+  const multi = dayGigs.length > 1;
+
+  // Smart routing: วิ่งรอก → นำทางจากร้านก่อนหน้าไปร้านถัดไป
+  let legTo = 0;
+  if (multi) {
+    if (isNowDay) { const nextStart = dayGigs.findIndex((g) => gigRange(g)[0] > now); legTo = nextStart === -1 ? dayGigs.length - 1 : nextStart; }
+    legTo = Math.min(Math.max(legTo, 1), dayGigs.length - 1);
+  }
+  const navUrl = multi ? mapsDirUrl(dayGigs[legTo - 1], dayGigs[legTo]) : mapsPlaceUrl(focus);
+  const navLabel = multi ? `${dayGigs[legTo - 1].venueName} → ${dayGigs[legTo].venueName}` : focus.venueName;
+
+  let countdown;
+  if (now >= fe) countdown = 'เล่นจบแล้ว';
+  else if (now >= fs) countdown = `กำลังเล่น · เหลืออีก ${fmtDur(fe - now)}`;
+  else if (fs - now < 24 * 60) countdown = `เริ่มในอีก ${fmtDur(fs - now)}`;
+  else countdown = `อีก ${dayNum(day) - dayNum(today)} วัน`;
+  const leaveAt = absToTime(fs - (focus.travelMinutes || 0));
+  const header = day === today ? 'งานคืนนี้' : day === yest ? 'งานกะดึก (เมื่อคืน)' : `งานถัดไป · ${relDay(day)}`;
+
+  return (
+    <div className="mx-4 rounded-[22px] overflow-hidden text-white shadow-[0_10px_30px_-10px_rgba(49,46,129,0.6)]" style={{ background: 'linear-gradient(145deg,#312E81 0%,#1E1B4B 100%)' }}>
+      <div className="p-5 pb-4 relative">
+        <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-white/[0.06]" />
+        <div className="absolute right-6 top-14 w-24 h-24 rounded-full bg-[#34C759]/[0.08]" />
+        <div className="flex items-center justify-between relative">
+          <div className="flex items-center gap-1.5 text-[13px] font-semibold text-white/70 uppercase tracking-wide">
+            <Icon name="graphic_eq" size={18} />{header}
+          </div>
+          {multi && <span className="text-[11px] font-bold px-2 py-[3px] rounded-full bg-[#FF9500] text-white flex items-center gap-1"><Icon name="directions_run" size={13} />วิ่งรอก {dayGigs.length} งาน</span>}
+        </div>
+        <button onClick={() => onEdit(focus)} className="block text-left mt-2 relative w-full">
+          <div className="text-[26px] font-bold leading-tight tracking-tight truncate">{focus.venueName}</div>
+          <div className="flex items-center gap-2 mt-1 text-[15px] text-white/85 tnum flex-wrap">
+            <span className="font-semibold">{focus.startTime} – {focus.endTime}</span>
+            {isOvernight(focus) && <span className="text-[11px] font-bold px-1.5 py-[1px] rounded bg-white/15 flex items-center gap-0.5"><Icon name="bedtime" size={12} />ข้ามคืน</span>}
+            {focus.bandName && <span className="text-white/70">· {focus.bandName}</span>}
+          </div>
+          <div className="flex items-center gap-2 mt-3 flex-wrap">
+            <span className="text-[12px] font-semibold px-2.5 py-[3px] rounded-full flex items-center gap-1" style={{ background: STATUS[focus.status].color + '33', color: focus.status === 'pending' ? '#FFE066' : '#fff' }}>
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: STATUS[focus.status].color }} />{STATUS[focus.status].label}
+            </span>
+            <span className="text-[12px] text-white/75 flex items-center gap-1"><Icon name="timer" size={14} />{countdown}</span>
+            {now < fs && focus.travelMinutes > 0 && <span className="text-[12px] text-white/75 flex items-center gap-1"><Icon name="directions_car" size={14} />ออกก่อน {leaveAt}</span>}
+          </div>
+        </button>
+
+        {multi && (
+          <div className="mt-4 rounded-[14px] bg-white/[0.08] divide-y divide-white/10 relative">
+            {dayGigs.map((g, i) => {
+              const [gs, ge] = gigRange(g);
+              const done = isNowDay && now >= ge;
+              return (
+                <div key={g.id} className={`flex items-center gap-2.5 px-3 py-2 ${done ? 'opacity-50' : ''}`}>
+                  <span className="w-5 h-5 rounded-full text-[11px] font-bold flex items-center justify-center" style={{ background: STATUS[g.status].color, color: g.status === 'pending' ? '#000' : '#fff' }}>{i + 1}</span>
+                  <button onClick={() => onEdit(g)} className="flex-1 min-w-0 text-left">
+                    <div className="text-[14px] font-semibold truncate">{g.venueName}</div>
+                    <div className="text-[12px] text-white/65 tnum">{g.startTime}–{g.endTime}{i > 0 && ` · ห่างจากงานก่อน ${fmtDur(gs - gigRange(dayGigs[i - 1])[1])}`}</div>
+                  </button>
+                  <button aria-label="นำทางช่วงนี้" onClick={() => openUrl(i === 0 ? mapsPlaceUrl(g) : mapsDirUrl(dayGigs[i - 1], g))} className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center active:bg-white/20"><Icon name={i === 0 ? 'location_on' : 'alt_route'} size={18} /></button>
+                  <button aria-label="ลงปฏิทิน" onClick={() => openUrl(calendarUrl(g))} className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center active:bg-white/20"><Icon name="calendar_add_on" size={18} /></button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-2.5 px-5 pb-5">
+        <button onClick={() => openUrl(navUrl)} className="h-[54px] rounded-[16px] bg-white text-[#1E1B4B] font-semibold flex flex-col items-center justify-center leading-tight active:scale-[0.98] transition-transform px-2">
+          <span className="flex items-center gap-1.5 text-[15px]"><Icon name={multi ? 'alt_route' : 'near_me'} fill size={20} />{multi ? 'นำทางวิ่งรอก' : 'นำทาง'}</span>
+          <span className="text-[11px] font-medium text-[#1E1B4B]/60 truncate max-w-full">{navLabel}</span>
+        </button>
+        <button onClick={() => openUrl(calendarUrl(focus))} className="h-[54px] rounded-[16px] bg-white/15 text-white font-semibold flex flex-col items-center justify-center leading-tight active:scale-[0.98] transition-transform backdrop-blur">
+          <span className="flex items-center gap-1.5 text-[15px]"><Icon name="event" size={20} />ลงปฏิทิน</span>
+          <span className="text-[11px] font-medium text-white/60">Google Calendar</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MonthlySummary({ gigs, onOpen }) {
+  const t = todayStr();
+  const ym = t.slice(0, 7);
+  const [y, m] = ym.split('-').map(Number);
+  const st = computeStats(gigs.filter((g) => g.date.startsWith(ym)));
+  return (
+    <Card className="mx-4 p-5">
+      <button onClick={onOpen} className="w-full text-left">
+        <div className="flex items-center justify-between">
+          <div className="text-[13px] font-semibold text-[#8E8E93] flex items-center gap-1"><Icon name="account_balance_wallet" size={17} />รายได้สุทธิ · {monthLabel(y, m)}</div>
+          <Icon name="chevron_right" className="text-[#C7C7CC]" />
+        </div>
+        <div className="text-[40px] font-bold tracking-tight tnum leading-tight mt-1">{fmtMoney(st.total)}</div>
+        <div className="text-[13px] text-[#8E8E93]">{st.income.length} งาน · {fmtDur(st.minutes)} บนเวที</div>
+      </button>
+      <div className="grid grid-cols-3 gap-2 mt-4">
+        {[
+          { l: 'ค่าตัว', v: st.fee, c: 'text-[#5856D6] dark:text-[#A5A3FF]', i: 'payments' },
+          { l: 'ทิป', v: st.tips, c: 'st-confirmed', i: 'volunteer_activism' },
+          { l: 'ค้างจ่าย', v: st.outstanding, c: 'st-issue', i: 'pending_actions' },
+        ].map((x) => (
+          <div key={x.l} className="rounded-[14px] bg-[#F2F2F7] dark:bg-[#2C2C2E] px-3 py-2.5">
+            <div className={`text-[12px] font-semibold flex items-center gap-1 ${x.c}`}><Icon name={x.i} size={14} />{x.l}</div>
+            <div className="text-[16px] font-bold tnum mt-0.5 truncate">{fmtMoney(x.v)}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center gap-1.5 text-[13px] text-[#8E8E93]">
+        <span className="w-2 h-2 rounded-full bg-[#FFCC00]" />
+        ยอดคาดการณ์ <span className="font-semibold text-black dark:text-white tnum">+{fmtMoney(st.forecast)}</span> จาก {st.pending.length} งานรอคอนเฟิร์ม
+      </div>
+    </Card>
+  );
+}
+
+function HomeView({ gigs, now, theme, setTheme, onAdd, onEdit, onDemo, goTab }) {
+  const today = todayStr();
+  const upcoming = gigs.filter((g) => g.status !== 'cancelled' && gigRange(g)[1] > now && g.date !== today).sort(cmpGig).slice(0, 6);
+  const hour = new Date().getHours();
+  const greet = hour < 5 ? 'ดึกแล้ว พักผ่อนบ้างนะ 🌙' : hour < 12 ? 'สวัสดีตอนเช้า ☀️' : hour < 17 ? 'สวัสดีตอนบ่าย 🎵' : 'คืนนี้ร็อกให้สุด 🎸';
+  return (
+    <div className="page-pad">
+      <PageHeader title="GigFlow" subtitle={`${fmtDateLong(today)}`} logo={<AppLogo size={36} />} right={<ThemeToggle mode={theme} setMode={setTheme} />} />
+      <div className="px-5 pb-3 text-[15px] text-[#8E8E93]">{greet}</div>
+      <TodayWidget gigs={gigs} now={now} onEdit={onEdit} onAdd={onAdd} onDemo={onDemo} />
+      <SectionTitle>สรุปเดือนนี้</SectionTitle>
+      <MonthlySummary gigs={gigs} onOpen={() => goTab('finance')} />
+      <SectionTitle right={<button onClick={() => goTab('schedule')} className="text-[15px] text-[#5856D6] dark:text-[#A5A3FF] font-medium">ดูทั้งหมด</button>}>คิวงานถัดไป</SectionTitle>
+      <Card className="mx-4 overflow-hidden">
+        {upcoming.length ? upcoming.map((g, i) => (
+          <React.Fragment key={g.id}>{i > 0 && <Sep />}<GigRow gig={g} now={now} onClick={() => onEdit(g)} /></React.Fragment>
+        )) : <div className="py-8 text-center text-[#8E8E93] text-[15px]">ไม่มีคิวงานล่วงหน้า</div>}
+      </Card>
+    </div>
+  );
+}
+
+/* =====================================================================
+   SCHEDULE
+   ===================================================================== */
+function ScheduleView({ gigs, now, theme, setTheme, onEdit, onAdd, onLineShare }) {
+  const t = todayStr();
+  const [view, setView] = useState('list');
+  const [filter, setFilter] = useState('all');
+  const [cursor, setCursor] = useState(() => ({ y: +t.slice(0, 4), m: +t.slice(5, 7) }));
+  const [selected, setSelected] = useState(t);
+  const ym = `${cursor.y}-${pad(cursor.m)}`;
+  const monthGigs = gigs.filter((g) => g.date.startsWith(ym)).sort(cmpGig);
+  const filtered = filter === 'all' ? monthGigs : monthGigs.filter((g) => g.status === filter);
+  const moveMonth = (d) => setCursor((c) => { let m = c.m + d, y = c.y; if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; } return { y, m }; });
+  const goToday = () => { setCursor({ y: +t.slice(0, 4), m: +t.slice(5, 7) }); setSelected(t); };
+
+  const groups = [];
+  filtered.forEach((g) => { const last = groups[groups.length - 1]; if (last && last.date === g.date) last.items.push(g); else groups.push({ date: g.date, items: [g] }); });
+
+  const first = `${ym}-01`;
+  const lead = weekdayOf(first);
+  const dim = daysInMonth(cursor.y, cursor.m);
+  const cells = [...Array(lead).fill(null), ...Array.from({ length: dim }, (_, i) => `${ym}-${pad(i + 1)}`)];
+  while (cells.length % 7) cells.push(null);
+  const byDate = {};
+  filtered.forEach((g) => { (byDate[g.date] = byDate[g.date] || []).push(g); });
+  const selGigs = (byDate[selected] || []);
+
+  return (
+    <div className="page-pad">
+      <PageHeader title="ตารางงาน" subtitle={`${monthGigs.filter((g) => g.status !== 'cancelled').length} งานในเดือนนี้`} right={<ThemeToggle mode={theme} setMode={setTheme} />} />
+      <div className="px-4 space-y-3">
+        <Segmented value={view} onChange={setView} options={[{ value: 'list', label: 'รายการ', icon: 'view_agenda' }, { value: 'calendar', label: 'ปฏิทิน', icon: 'calendar_month' }]} />
+        <button onClick={() => onLineShare(cursor)} className="w-full h-12 rounded-[14px] bg-[#06C755] text-white font-semibold flex items-center justify-center gap-2 active:opacity-85 shadow-[0_6px_16px_-8px_rgba(6,199,85,0.8)]">
+          <Icon name="content_copy" size={20} />ก๊อปปี้คิวงานส่ง LINE
+        </button>
+        <div className="flex items-center justify-between">
+          <button onClick={() => moveMonth(-1)} aria-label="เดือนก่อน" className="w-9 h-9 rounded-full flex items-center justify-center text-[#5856D6] dark:text-[#A5A3FF] active:bg-black/5"><Icon name="chevron_left" size={26} /></button>
+          <button onClick={goToday} className="text-[17px] font-semibold">{monthLabel(cursor.y, cursor.m)}{ym !== t.slice(0, 7) && <span className="ml-2 text-[13px] text-[#5856D6] dark:text-[#A5A3FF]">กลับวันนี้</span>}</button>
+          <button onClick={() => moveMonth(1)} aria-label="เดือนถัดไป" className="w-9 h-9 rounded-full flex items-center justify-center text-[#5856D6] dark:text-[#A5A3FF] active:bg-black/5"><Icon name="chevron_right" size={26} /></button>
+        </div>
+        <div className="flex gap-2 overflow-x-auto no-scrollbar -mx-4 px-4">
+          {[{ k: 'all', l: 'ทั้งหมด', c: null }, ...STATUS_ORDER.map((k) => ({ k, l: STATUS[k].label, c: STATUS[k].color }))].map((f) => {
+            const n = f.k === 'all' ? monthGigs.length : monthGigs.filter((g) => g.status === f.k).length;
+            const on = filter === f.k;
+            return (
+              <button key={f.k} onClick={() => setFilter(f.k)} className={`h-8 px-3 rounded-full text-[13px] font-semibold whitespace-nowrap flex items-center gap-1.5 transition-colors ${on ? 'bg-black text-white dark:bg-white dark:text-black' : 'bg-white dark:bg-[#1C1C1E] text-black/80 dark:text-white/80'}`}>
+                {f.c && <span className="w-2 h-2 rounded-full" style={{ background: f.c }} />}{f.l}<span className={`tnum ${on ? 'opacity-70' : 'text-[#8E8E93]'}`}>{n}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {view === 'list' ? (
+        <div className="mt-3">
+          {groups.length ? groups.map((gr) => (
+            <div key={gr.date} className="mb-4">
+              <div className="px-5 pb-1.5 flex items-center gap-2 text-[13px] font-semibold text-[#8E8E93]">
+                {fmtDateShort(gr.date)}
+                {gr.date === t && <span className="text-[11px] font-bold px-1.5 py-[1px] rounded bg-[#5856D6] text-white">วันนี้</span>}
+                {gr.items.filter((g) => g.status !== 'cancelled').length > 1 && <span className="text-[11px] font-bold px-1.5 py-[1px] rounded bg-[#FF9500]/15 st-issue">วิ่งรอก</span>}
+              </div>
+              <Card className="mx-4 overflow-hidden">
+                {gr.items.map((g, i) => <React.Fragment key={g.id}>{i > 0 && <Sep />}<GigRow gig={g} now={now} showDate={false} onClick={() => onEdit(g)} /></React.Fragment>)}
+              </Card>
+            </div>
+          )) : (
+            <Card className="mx-4"><EmptyState icon="event_busy" title="ไม่มีคิวงาน" text={filter === 'all' ? 'เดือนนี้ยังว่างอยู่' : `ไม่มีงานสถานะ “${STATUS[filter].label}”`}><button onClick={() => onAdd()} className="h-10 px-5 rounded-full bg-[#5856D6] text-white font-semibold">+ เพิ่มคิวงาน</button></EmptyState></Card>
+          )}
+        </div>
+      ) : (
+        <div className="mt-3">
+          <Card className="mx-4 p-3">
+            <div className="grid grid-cols-7 mb-1">
+              {TH_DAYS_MINI.map((d, i) => <div key={d} className={`text-center text-[12px] font-semibold py-1 ${i === 0 ? 'text-[#FF3B30]/80' : 'text-[#8E8E93]'}`}>{d}</div>)}
+            </div>
+            <div className="grid grid-cols-7 gap-y-1">
+              {cells.map((d, i) => {
+                if (!d) return <div key={'e' + i} />;
+                const list = byDate[d] || [];
+                const isSel = d === selected, isToday = d === t;
+                return (
+                  <button key={d} onClick={() => setSelected(d)} className="flex flex-col items-center py-1 rounded-[12px] active:bg-black/5">
+                    <span className={`w-9 h-9 rounded-full flex items-center justify-center text-[16px] tnum transition-colors ${isSel ? (isToday ? 'bg-[#FF3B30] text-white font-bold' : 'bg-black text-white dark:bg-white dark:text-black font-bold') : isToday ? 'text-[#FF3B30] font-bold' : ''}`}>{+d.slice(8)}</span>
+                    <span className="flex gap-[3px] h-[6px] mt-0.5">
+                      {list.slice(0, 3).map((g) => <span key={g.id} className="w-[6px] h-[6px] rounded-full" style={{ background: STATUS[g.status].color }} />)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </Card>
+          <div className="px-5 pt-4 pb-1.5 flex items-center justify-between">
+            <div className="text-[15px] font-semibold">{fmtDateLong(selected)}</div>
+            <button onClick={() => onAdd(selected)} className="text-[15px] font-semibold text-[#5856D6] dark:text-[#A5A3FF] flex items-center gap-0.5"><Icon name="add" size={20} />เพิ่ม</button>
+          </div>
+          <Card className="mx-4 overflow-hidden">
+            {selGigs.length ? selGigs.map((g, i) => <React.Fragment key={g.id}>{i > 0 && <Sep />}<GigRow gig={g} now={now} showDate={false} onClick={() => onEdit(g)} /></React.Fragment>)
+              : <div className="py-7 text-center text-[#8E8E93] text-[15px]">ว่าง — ไม่มีคิวงานวันนี้</div>}
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   FINANCE
+   ===================================================================== */
+function BreakdownTable({ title, icon, rows, emptyText }) {
+  const colors = ['#5856D6', '#34C759', '#FF9500', '#007AFF', '#FF2D55', '#AF52DE', '#5AC8FA', '#FFCC00'];
+  return (
+    <>
+      <SectionTitle>{title}</SectionTitle>
+      <Card className="mx-4 overflow-hidden">
+        {rows.length ? rows.map((r, i) => (
+          <React.Fragment key={r.name}>
+            {i > 0 && <Sep />}
+            <div className="px-4 py-3">
+              <div className="flex items-center gap-2.5">
+                <span className="w-7 h-7 rounded-[8px] flex items-center justify-center text-white shrink-0" style={{ background: colors[i % colors.length] }}><Icon name={icon} size={16} /></span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[15px] font-semibold truncate">{r.name}</div>
+                  <div className="text-[12px] text-[#8E8E93]">{r.count} งาน</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[15px] font-bold tnum">{fmtMoney(r.amount)}</div>
+                  <div className="text-[12px] text-[#8E8E93] tnum">{r.pct.toFixed(1)}%</div>
+                </div>
+              </div>
+              <div className="mt-2 h-1.5 rounded-full bg-[#F2F2F7] dark:bg-[#2C2C2E] overflow-hidden ml-[38px]">
+                <div className="h-full rounded-full" style={{ width: `${r.pct}%`, background: colors[i % colors.length] }} />
+              </div>
+            </div>
+          </React.Fragment>
+        )) : <div className="py-6 text-center text-[#8E8E93] text-[14px]">{emptyText}</div>}
+      </Card>
+    </>
+  );
+}
+
+function ToolRow({ icon, color, label, sub, onClick, destructive }) {
+  return (
+    <button onClick={onClick} className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-black/[0.04] dark:active:bg-white/[0.06]">
+      <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0" style={{ background: color }}><Icon name={icon} size={18} /></span>
+      <div className="flex-1 min-w-0">
+        <div className={`text-[16px] ${destructive ? 'text-[#FF3B30]' : ''}`}>{label}</div>
+        {sub && <div className="text-[12px] text-[#8E8E93]">{sub}</div>}
+      </div>
+      <Icon name="chevron_right" className="text-[#C7C7CC]" />
+    </button>
+  );
+}
+
+function FinanceView({ gigs, now, theme, setTheme, onEdit, onMarkPaid, onBatch, onExport, onImport, onDemo, onClear }) {
+  const t = todayStr();
+  const [mode, setMode] = useState('month');
+  const [cur, setCur] = useState(() => ({ y: +t.slice(0, 4), m: +t.slice(5, 7) }));
+  const prefix = mode === 'month' ? `${cur.y}-${pad(cur.m)}` : `${cur.y}-`;
+  const list = gigs.filter((g) => g.date.startsWith(prefix));
+  const st = computeStats(list);
+  const byBand = breakdown(st.income, (g) => g.bandName || 'ไม่ระบุวง');
+  const byVenue = breakdown(st.income, (g) => g.venueName);
+  const allUnpaid = computeStats(gigs).unpaidGigs.sort(cmpGig);
+  const move = (d) => setCur((c) => {
+    if (mode === 'year') return { ...c, y: c.y + d };
+    let m = c.m + d, y = c.y; if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; } return { y, m };
+  });
+  const fileRef = useRef(null);
+
+  return (
+    <div className="page-pad">
+      <PageHeader title="บัญชี" subtitle="รายรับ & ย้อนหลัง" right={<ThemeToggle mode={theme} setMode={setTheme} />} />
+      <div className="px-4 space-y-3">
+        <Segmented value={mode} onChange={setMode} options={[{ value: 'month', label: 'รายเดือน' }, { value: 'year', label: 'รายปี' }]} />
+        <div className="flex items-center justify-between">
+          <button onClick={() => move(-1)} aria-label="ก่อนหน้า" className="w-9 h-9 rounded-full flex items-center justify-center text-[#5856D6] dark:text-[#A5A3FF]"><Icon name="chevron_left" size={26} /></button>
+          <div className="text-[17px] font-semibold">{mode === 'month' ? monthLabel(cur.y, cur.m) : `ปี ${cur.y + 543}`}</div>
+          <button onClick={() => move(1)} aria-label="ถัดไป" className="w-9 h-9 rounded-full flex items-center justify-center text-[#5856D6] dark:text-[#A5A3FF]"><Icon name="chevron_right" size={26} /></button>
+        </div>
+      </div>
+
+      <Card className="mx-4 mt-2 p-5">
+        <div className="text-[13px] font-semibold text-[#8E8E93]">รายได้สุทธิ (ค่าตัว + ทิป)</div>
+        <div className="text-[40px] font-bold tracking-tight tnum leading-tight">{fmtMoney(st.total)}</div>
+        <div className="grid grid-cols-2 gap-2 mt-4">
+          {[
+            { l: 'ยอดค่าตัว', v: fmtMoney(st.fee), i: 'payments', c: '#5856D6' },
+            { l: 'ยอดทิป', v: fmtMoney(st.tips), i: 'volunteer_activism', c: '#34C759' },
+            { l: 'ค้างจ่าย', v: fmtMoney(st.outstanding), i: 'pending_actions', c: '#FF9500' },
+            { l: 'คาดการณ์ (รอคอนเฟิร์ม)', v: '+' + fmtMoney(st.forecast), i: 'trending_up', c: '#FFCC00' },
+            { l: 'จำนวนงาน', v: `${st.income.length} งาน${st.cancelled ? ` · แคนเซิล ${st.cancelled}` : ''}`, i: 'music_note', c: '#007AFF' },
+            { l: 'เฉลี่ย/งาน · ชั่วโมงเล่น', v: `${fmtMoney(st.avg)} · ${Math.round(st.minutes / 6) / 10} ชม.`, i: 'equalizer', c: '#AF52DE' },
+          ].map((x) => (
+            <div key={x.l} className="rounded-[14px] bg-[#F2F2F7] dark:bg-[#2C2C2E] px-3 py-2.5">
+              <div className="text-[11px] font-semibold text-[#8E8E93] flex items-center gap-1"><Icon name={x.i} size={14} style={{ color: x.c }} />{x.l}</div>
+              <div className="text-[15px] font-bold tnum mt-0.5 truncate">{x.v}</div>
+            </div>
+          ))}
+        </div>
+        <div className="text-[11px] text-[#8E8E93] mt-3 leading-snug">* นับรายได้จากงาน “คอนเฟิร์ม” และ “ติดปัญหา” · งาน “รอคอนเฟิร์ม” แสดงเป็นยอดคาดการณ์ · ไม่นับงาน “แคนเซิล”</div>
+      </Card>
+
+      <BreakdownTable title="สัดส่วนตามชื่อวง" icon="groups" rows={byBand} emptyText="ยังไม่มีรายได้ในช่วงนี้" />
+      <BreakdownTable title="สัดส่วนตามร้าน" icon="storefront" rows={byVenue} emptyText="ยังไม่มีรายได้ในช่วงนี้" />
+
+      <SectionTitle right={allUnpaid.length ? <span className="text-[15px] font-bold st-issue tnum">{fmtMoney(computeStats(gigs).outstanding)}</span> : null}>ยังค้างจ่าย (ทุกช่วงเวลา)</SectionTitle>
+      <Card className="mx-4 overflow-hidden">
+        {allUnpaid.length ? allUnpaid.map((g, i) => (
+          <React.Fragment key={g.id}>
+            {i > 0 && <Sep />}
+            <div className="flex items-center gap-3 pl-4 pr-3 py-2.5">
+              <button onClick={() => onEdit(g)} className="flex-1 min-w-0 text-left">
+                <div className="text-[15px] font-semibold truncate">{g.venueName}</div>
+                <div className="text-[12px] text-[#8E8E93] tnum">{fmtDateShort(g.date)} · {fmtMoney(addMoney(g.baseFee, g.tips))}</div>
+              </button>
+              <button onClick={() => onMarkPaid(g)} className="h-8 px-3 rounded-full bg-[#34C759]/15 st-confirmed text-[13px] font-semibold flex items-center gap-1 active:opacity-70"><Icon name="check" size={16} />รับเงินแล้ว</button>
+            </div>
+          </React.Fragment>
+        )) : <div className="py-6 text-center text-[#8E8E93] text-[14px] flex items-center justify-center gap-1.5"><Icon name="verified" className="text-[#34C759]" fill />เคลียร์ครบทุกงานแล้ว</div>}
+      </Card>
+
+      <SectionTitle>เครื่องมือ & สำรองข้อมูล</SectionTitle>
+      <Card className="mx-4 overflow-hidden">
+        <ToolRow icon="table_rows" color="#5856D6" label="กรอกงานย้อนหลังรวดเดียว" sub="ตารางแบบ Spreadsheet เพิ่มหลายงานพร้อมกัน" onClick={onBatch} />
+        <Sep />
+        <ToolRow icon="download" color="#007AFF" label="Export สำรองข้อมูล (.json)" sub={`${gigs.length} งาน`} onClick={onExport} />
+        <Sep />
+        <ToolRow icon="upload" color="#34C759" label="Import กู้คืนข้อมูล (.json)" onClick={() => fileRef.current?.click()} />
+        <Sep />
+        <ToolRow icon="science" color="#FF9500" label="โหลดข้อมูลตัวอย่าง (Demo)" onClick={onDemo} />
+        <Sep />
+        <ToolRow icon="delete" color="#FF3B30" label="ล้างข้อมูลทั้งหมด" destructive onClick={onClear} />
+      </Card>
+      <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onImport(f); e.target.value = ''; }} />
+      <div className="text-center text-[12px] text-[#8E8E93] mt-5 px-8 leading-relaxed flex flex-col items-center gap-2">
+        <AppLogo size={28} />
+        ข้อมูลทั้งหมดถูกบันทึกในเครื่องนี้ (localStorage) อัตโนมัติ<br />ไม่มีการส่งข้อมูลขึ้นเซิร์ฟเวอร์ · ควร Export สำรองไว้เป็นระยะ
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   GIG SHEET (3-stage progressive entry)
+   ===================================================================== */
+const Row = ({ label, icon, iconBg, children, onClick }) => (
+  <div onClick={onClick} className="flex items-center gap-3 px-4 min-h-[50px] py-1.5">
+    {icon && <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0" style={{ background: iconBg || '#8E8E93' }}><Icon name={icon} size={18} /></span>}
+    <span className="text-[16px] shrink-0">{label}</span>
+    <div className="flex-1 min-w-0 flex justify-end items-center">{children}</div>
+  </div>
+);
+const GroupLabel = ({ children }) => <div className="px-4 pt-5 pb-1.5 text-[13px] text-[#8E8E93] uppercase tracking-wide">{children}</div>;
+const inputCls = 'bg-transparent outline-none text-right text-[16px] w-full placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E] text-[#3C3C43] dark:text-[#EBEBF5]';
+
+function initForm(g) {
+  return {
+    date: g.date, startTime: g.startTime, endTime: g.endTime, venueName: g.venueName || '', status: g.status || 'pending',
+    bandName: g.bandName || '', baseFee: g.baseFee ? String(g.baseFee) : '', mapsUrl: g.mapsUrl || '',
+    travelMinutes: String(g.travelMinutes ?? 30), notes: g.notes || '', tips: g.tips ? String(g.tips) : '', isPaid: !!g.isPaid,
+  };
+}
+function formToData(f) {
+  return {
+    date: f.date, startTime: f.startTime, endTime: f.endTime, venueName: f.venueName.trim(), status: f.status,
+    bandName: f.bandName.trim(), baseFee: parseMoney(f.baseFee), mapsUrl: isHttpUrl(f.mapsUrl) ? f.mapsUrl.trim() : '',
+    travelMinutes: parseIntSafe(f.travelMinutes, 30), notes: f.notes, tips: parseMoney(f.tips), isPaid: !!f.isPaid,
+  };
+}
+
+function IssueBanners({ issues, multiDates }) {
+  if (!issues.conflicts.length && !issues.tight.length) return null;
+  const fmtG = (x) => `${x.gig.venueName} (${x.gig.startTime}–${x.gig.endTime}${multiDates ? `, ${fmtDateShort(x.date)}` : ''})`;
+  return (
+    <div className="px-4 pt-3 space-y-2">
+      {issues.conflicts.length > 0 && (
+        <div className="rounded-[14px] bg-[#FF3B30] text-white px-3.5 py-3 flex gap-2.5 anim-pop">
+          <Icon name="event_busy" fill size={22} />
+          <div className="text-[13.5px] leading-snug">
+            <div className="font-bold">คิวชน! ทับซ้อนกับงานอื่น {issues.conflicts.length} รายการ</div>
+            {issues.conflicts.slice(0, 3).map((x, i) => <div key={i} className="opacity-90">• {fmtG(x)}</div>)}
+            {issues.conflicts.length > 3 && <div className="opacity-80">และอีก {issues.conflicts.length - 3} รายการ</div>}
+          </div>
+        </div>
+      )}
+      {issues.tight.length > 0 && (
+        <div className="rounded-[14px] bg-[#FF9500] text-white px-3.5 py-3 flex gap-2.5 anim-pop">
+          <Icon name="directions_car" fill size={22} />
+          <div className="text-[13.5px] leading-snug">
+            <div className="font-bold">เวลาเก็บของ & เดินทางอาจไม่ทัน</div>
+            {issues.tight.slice(0, 3).map((x, i) => (
+              <div key={i} className="opacity-95">• {x.dir === 'before' ? 'หลังจบ' : 'ก่อนไป'} {fmtG(x)} เหลือเวลา {fmtDur(x.gap)} (ต้องใช้ {fmtDur(x.need)})</div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GigSheet({ mode, initial, gigs, presets, bands, onClose, onSave, onDelete, toast }) {
+  const [tab, setTab] = useState(0);
+  const [f, setF] = useState(() => initForm(initial));
+  const [rec, setRec] = useState({ enabled: false, days: [weekdayOf(initial.date)], weeks: 12 });
+  const [focusVenue, setFocusVenue] = useState(false);
+  const [applied, setApplied] = useState(null);
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const isEdit = mode === 'edit';
+  const groupSize = initial.recurringGroupId ? gigs.filter((g) => g.recurringGroupId === initial.recurringGroupId).length : 0;
+
+  const valid = isValidDate(f.date) && isValidTime(f.startTime) && isValidTime(f.endTime) && f.venueName.trim().length > 0;
+  const recDates = useMemo(() => (!isEdit && rec.enabled && isValidDate(f.date) ? genRecurringDates(f.date, rec.days, rec.weeks) : []), [isEdit, rec, f.date]);
+
+  const issues = useMemo(() => {
+    const data = formToData(f);
+    const exclude = new Set(isEdit ? [initial.id] : []);
+    const dates = !isEdit && rec.enabled ? recDates : [f.date];
+    const res = { conflicts: [], tight: [] };
+    dates.forEach((d) => { const r = findIssues({ ...data, date: d }, gigs, exclude); res.conflicts.push(...r.conflicts); res.tight.push(...r.tight); });
+    return res;
+  }, [f, rec, recDates, gigs, isEdit, initial.id]);
+
+  const findPreset = (name) => {
+    const n = name.trim().toLowerCase();
+    if (!n) return null;
+    const k = Object.keys(presets).find((x) => x.toLowerCase() === n);
+    return k ? { name: k, ...presets[k] } : null;
+  };
+  const applyPreset = (p) => {
+    setF((prev) => ({
+      ...prev, venueName: p.name,
+      startTime: isValidTime(p.startTime) ? p.startTime : prev.startTime,
+      endTime: isValidTime(p.endTime) ? p.endTime : prev.endTime,
+      baseFee: p.baseFee ? String(p.baseFee) : prev.baseFee,
+      mapsUrl: p.mapsUrl || prev.mapsUrl,
+      travelMinutes: p.travelMinutes !== undefined ? String(p.travelMinutes) : prev.travelMinutes,
+      bandName: prev.bandName || p.bandName || '',
+    }));
+    setApplied(p.name);
+    toast(`ดึงค่าจากโปรไฟล์ “${p.name}” แล้ว`, 'auto_awesome');
+  };
+  const suggestions = useMemo(() => {
+    const q = f.venueName.trim().toLowerCase();
+    return Object.entries(presets)
+      .filter(([k]) => !q || (k.toLowerCase().includes(q) && k.toLowerCase() !== q))
+      .sort((a, b) => (b[1].count || 0) - (a[1].count || 0))
+      .slice(0, 6).map(([name, v]) => ({ name, ...v }));
+  }, [f.venueName, presets]);
+
+  const durationMin = isValidTime(f.startTime) && isValidTime(f.endTime) ? (() => { const [s, e] = gigRange({ date: '2000-01-01', startTime: f.startTime, endTime: f.endTime }); return e - s; })() : 0;
+  const overnight = isValidTime(f.startTime) && isValidTime(f.endTime) && toMin(f.endTime) <= toMin(f.startTime);
+
+  const submit = (overrides = {}) => {
+    if (!valid) { setTab(0); toast('กรุณากรอกวันที่ เวลา และชื่อร้านให้ครบ', 'error'); return; }
+    if (!isEdit && rec.enabled && !rec.days.length) { setTab(0); toast('เลือกวันประจำอย่างน้อย 1 วัน', 'error'); return; }
+    onSave({ mode, original: initial, data: { ...formToData(f), ...overrides }, rec: !isEdit && rec.enabled ? { ...rec, dates: recDates } : null });
+  };
+
+  const tabs = [
+    { l: 'ลงคิวด่วน', i: 'bolt', done: valid },
+    { l: 'ค่าตัว & เดินทาง', i: 'payments', done: parseMoney(f.baseFee) > 0 || !!f.mapsUrl },
+    { l: 'ปิดจ๊อบ & ทิป', i: 'task_alt', done: f.isPaid || parseMoney(f.tips) > 0 },
+  ];
+  const total = addMoney(parseMoney(f.baseFee), parseMoney(f.tips));
+
+  return (
+    <Sheet onClose={onClose} full>
+      {/* nav bar */}
+      <div className="pt-4 px-2 flex items-center justify-between shrink-0">
+        <button onClick={onClose} className="h-10 px-3 text-[17px] text-[#5856D6] dark:text-[#A5A3FF]">ยกเลิก</button>
+        <div className="text-[17px] font-semibold">{isEdit ? 'แก้ไขงาน' : 'เพิ่มคิวงาน'}</div>
+        <button onClick={() => submit()} disabled={!valid} className={`h-10 px-3 text-[17px] font-semibold ${valid ? 'text-[#5856D6] dark:text-[#A5A3FF]' : 'text-[#C7C7CC] dark:text-[#48484A]'}`}>บันทึก</button>
+      </div>
+      {/* stage tabs */}
+      <div className="px-4 pt-2 pb-1 shrink-0">
+        <div className="flex p-[2px] rounded-[10px] bg-[#767680]/[0.12] dark:bg-[#767680]/[0.24]">
+          {tabs.map((t, i) => (
+            <button key={i} onClick={() => setTab(i)} className={`flex-1 h-[38px] rounded-[8px] text-[12.5px] font-semibold flex items-center justify-center gap-1 transition-all ${tab === i ? 'bg-white dark:bg-[#636366] shadow-[0_3px_8px_rgba(0,0,0,0.12)]' : 'text-black/60 dark:text-white/60'}`}>
+              <span className={`w-[18px] h-[18px] rounded-full text-[10px] font-bold flex items-center justify-center ${t.done ? 'bg-[#34C759] text-white' : 'bg-black/10 dark:bg-white/15'}`}>{t.done ? <Icon name="check" size={13} /> : i + 1}</span>
+              <span className="truncate">{t.l}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <IssueBanners issues={issues} multiDates={!isEdit && rec.enabled} />
+
+      <div className="flex-1 overflow-y-auto no-scrollbar sheet-pad">
+        {tab === 0 && (
+          <div className="anim-fade">
+            <GroupLabel>วันเวลา *</GroupLabel>
+            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+              <Row label="วันที่เล่น" icon="calendar_today" iconBg="#FF3B30"><input type="date" value={f.date} onChange={(e) => set('date', e.target.value)} className={inputCls} /></Row>
+              <Sep />
+              <Row label="เวลาเริ่ม" icon="play_arrow" iconBg="#34C759"><input type="time" value={f.startTime} onChange={(e) => set('startTime', e.target.value)} className={inputCls} /></Row>
+              <Sep />
+              <Row label="เวลาเลิก" icon="stop" iconBg="#FF9500"><input type="time" value={f.endTime} onChange={(e) => set('endTime', e.target.value)} className={inputCls} /></Row>
+              {durationMin > 0 && (
+                <div className="px-4 pb-2.5 pt-0.5 text-[12.5px] text-[#8E8E93] flex items-center gap-1 justify-end">
+                  {overnight && <span className="font-semibold text-[#5856D6] dark:text-[#A5A3FF] flex items-center gap-0.5"><Icon name="bedtime" size={14} />ข้ามเที่ยงคืน → จบ {isValidDate(f.date) ? fmtDateShort(addDays(f.date, 1)) : 'วันถัดไป'} ·</span>}
+                  เล่น {fmtDur(durationMin)}
+                </div>
+              )}
+            </div>
+
+            <GroupLabel>ร้าน / สถานที่ *</GroupLabel>
+            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+              <div className="flex items-center gap-3 px-4 min-h-[50px]">
+                <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#5856D6]"><Icon name="storefront" size={18} /></span>
+                <input value={f.venueName} placeholder="พิมพ์ชื่อร้าน…" autoComplete="off"
+                  onChange={(e) => { set('venueName', e.target.value); setApplied(null); }}
+                  onFocus={() => setFocusVenue(true)}
+                  onBlur={() => { setFocusVenue(false); const p = findPreset(f.venueName); if (p && applied !== p.name && !isEdit) applyPreset(p); }}
+                  className="flex-1 bg-transparent outline-none text-[16px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+                {applied && <span className="text-[11px] font-semibold st-confirmed flex items-center gap-0.5 shrink-0"><Icon name="auto_awesome" size={14} fill />ใช้โปรไฟล์ร้าน</span>}
+              </div>
+              {focusVenue && suggestions.length > 0 && (
+                <div className="border-t border-black/[0.08] dark:border-white/[0.1]">
+                  <div className="px-4 pt-2 text-[11px] font-semibold text-[#8E8E93] uppercase">ร้านที่เคยบันทึก (Venue Presets)</div>
+                  {suggestions.map((s) => (
+                    <button key={s.name} onMouseDown={(e) => e.preventDefault()} onClick={() => { applyPreset(s); setFocusVenue(false); document.activeElement?.blur(); }}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-left active:bg-black/5 dark:active:bg-white/5">
+                      <Icon name="history" size={18} className="text-[#8E8E93]" />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[15px] font-medium truncate">{s.name}</div>
+                        <div className="text-[12px] text-[#8E8E93] tnum truncate">{s.startTime}–{s.endTime}{s.baseFee ? ` · ${fmtMoney(s.baseFee)}` : ''}{s.travelMinutes !== undefined ? ` · เดินทาง ${s.travelMinutes} นาที` : ''}</div>
+                      </div>
+                      <Icon name="north_west" size={16} className="text-[#C7C7CC]" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <GroupLabel>สถานะงาน</GroupLabel>
+            <div className="mx-4 grid grid-cols-2 gap-2">
+              {STATUS_ORDER.map((k) => {
+                const s = STATUS[k], on = f.status === k;
+                return (
+                  <button key={k} onClick={() => set('status', k)}
+                    className={`h-12 rounded-[12px] px-3 flex items-center gap-2 text-[15px] font-semibold transition-all border-2 ${on ? 'bg-white dark:bg-[#2C2C2E]' : 'bg-white/60 dark:bg-[#2C2C2E]/50 border-transparent text-black/60 dark:text-white/60'}`}
+                    style={on ? { borderColor: s.color } : {}}>
+                    <Icon name={s.icon} fill={on} size={20} style={{ color: s.color }} />
+                    <span className={on ? '' : ''}>{s.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <GroupLabel>ชื่อวง (ไม่บังคับ)</GroupLabel>
+            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+              <div className="flex items-center gap-3 px-4 min-h-[50px]">
+                <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#FF2D55]"><Icon name="groups" size={18} /></span>
+                <input value={f.bandName} onChange={(e) => set('bandName', e.target.value)} placeholder="พิมพ์ชื่อวงใหม่ หรือเลือกด้านล่าง" className="flex-1 bg-transparent outline-none text-[16px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+                {f.bandName && <button onClick={() => set('bandName', '')} aria-label="ล้าง"><Icon name="cancel" fill size={18} className="text-[#C7C7CC]" /></button>}
+              </div>
+            </div>
+            {bands.length > 0 && (
+              <div className="flex gap-2 overflow-x-auto no-scrollbar px-4 pt-2">
+                {bands.map((b) => (
+                  <button key={b} onClick={() => set('bandName', f.bandName === b ? '' : b)}
+                    className={`h-8 px-3 rounded-full text-[13px] font-semibold whitespace-nowrap transition-colors ${f.bandName === b ? 'bg-[#FF2D55] text-white' : 'bg-white dark:bg-[#2C2C2E]'}`}>{b}</button>
+                ))}
+              </div>
+            )}
+
+            {!isEdit ? (
+              <>
+                <GroupLabel>ร้านประจำ</GroupLabel>
+                <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+                  <Row label="ตั้งเป็นงานประจำทุกสัปดาห์" icon="repeat" iconBg="#007AFF">
+                    <Switch checked={rec.enabled} label="ร้านประจำ" onChange={(v) => setRec((r) => ({ ...r, enabled: v, days: v && isValidDate(f.date) && !r.days.length ? [weekdayOf(f.date)] : r.days }))} />
+                  </Row>
+                  {rec.enabled && (
+                    <div className="px-4 pb-4 anim-fade">
+                      <div className="text-[13px] text-[#8E8E93] mb-2">เล่นทุกวัน</div>
+                      <div className="grid grid-cols-7 gap-1.5">
+                        {[1, 2, 3, 4, 5, 6, 0].map((d) => {
+                          const on = rec.days.includes(d);
+                          return (
+                            <button key={d} onClick={() => setRec((r) => ({ ...r, days: on ? r.days.filter((x) => x !== d) : [...r.days, d] }))}
+                              className={`h-10 rounded-full text-[14px] font-semibold transition-colors ${on ? 'bg-[#007AFF] text-white' : 'bg-[#F2F2F7] dark:bg-[#3A3A3C]'}`}>{TH_DAYS_MINI[d]}</button>
+                          );
+                        })}
+                      </div>
+                      <div className="text-[13px] text-[#8E8E93] mt-3 mb-2">สร้างล่วงหน้า</div>
+                      <Segmented value={rec.weeks} onChange={(v) => setRec((r) => ({ ...r, weeks: v }))} options={[{ value: 4, label: '4 สัปดาห์' }, { value: 12, label: '12 สัปดาห์' }, { value: 24, label: '24 สัปดาห์' }]} />
+                      <div className="mt-3 rounded-[10px] bg-[#007AFF]/10 px-3 py-2 text-[13px] text-[#007AFF] dark:text-[#64D2FF] flex items-center gap-1.5">
+                        <Icon name="info" size={16} />
+                        {recDates.length ? `จะสร้าง ${recDates.length} งาน: ${fmtDateShort(recDates[0])} – ${fmtDateShort(recDates[recDates.length - 1])}` : 'ยังไม่มีวันที่ตรงกับวันที่เลือก'}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : groupSize > 1 && (
+              <div className="mx-4 mt-5 rounded-[12px] bg-[#007AFF]/10 px-3.5 py-3 text-[13px] text-[#007AFF] dark:text-[#64D2FF] flex items-center gap-2">
+                <Icon name="repeat" size={18} />งานนี้อยู่ในชุดร้านประจำ {groupSize} งาน · เมื่อแก้ไขจะถามขอบเขตการเปลี่ยนแปลง
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === 1 && (
+          <div className="anim-fade">
+            <GroupLabel>ค่าตัว</GroupLabel>
+            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+              <Row label="ค่าตัว (บาท)" icon="payments" iconBg="#5856D6">
+                <input inputMode="decimal" value={f.baseFee} onChange={(e) => set('baseFee', e.target.value.replace(/[^\d.,]/g, ''))} placeholder="0" className={inputCls + ' tnum font-semibold'} />
+              </Row>
+            </div>
+            <div className="flex gap-2 px-4 pt-2 overflow-x-auto no-scrollbar">
+              {[1000, 1500, 2000, 2500, 3000, 5000].map((v) => (
+                <button key={v} onClick={() => set('baseFee', String(v))} className={`h-8 px-3 rounded-full text-[13px] font-semibold tnum whitespace-nowrap ${parseMoney(f.baseFee) === v ? 'bg-[#5856D6] text-white' : 'bg-white dark:bg-[#2C2C2E]'}`}>{fmtMoney(v)}</button>
+              ))}
+            </div>
+
+            <GroupLabel>การเดินทาง</GroupLabel>
+            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+              <div className="flex items-center gap-3 px-4 min-h-[50px]">
+                <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#34C759]"><Icon name="map" size={18} /></span>
+                <input type="url" inputMode="url" value={f.mapsUrl} onChange={(e) => set('mapsUrl', e.target.value)} placeholder="วางลิงก์ Google Maps ของร้าน" className="flex-1 min-w-0 bg-transparent outline-none text-[15px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+                {isHttpUrl(f.mapsUrl) && <button onClick={() => openUrl(f.mapsUrl)} className="text-[13px] font-semibold text-[#5856D6] dark:text-[#A5A3FF] shrink-0">ทดสอบ</button>}
+              </div>
+              {f.mapsUrl && !isHttpUrl(f.mapsUrl) && <div className="px-4 pb-2 text-[12px] st-cancelled">ลิงก์ต้องขึ้นต้นด้วย https://</div>}
+              <Sep />
+              <Row label="เก็บของ + เดินทาง" icon="directions_car" iconBg="#FF9500">
+                <input inputMode="numeric" value={f.travelMinutes} onChange={(e) => set('travelMinutes', e.target.value.replace(/[^\d]/g, ''))} className={inputCls + ' tnum w-16'} />
+                <span className="text-[#8E8E93] ml-1">นาที</span>
+              </Row>
+            </div>
+            <div className="flex gap-2 px-4 pt-2">
+              {[15, 30, 45, 60, 90].map((v) => (
+                <button key={v} onClick={() => set('travelMinutes', String(v))} className={`flex-1 h-8 rounded-full text-[13px] font-semibold tnum ${parseIntSafe(f.travelMinutes) === v ? 'bg-[#FF9500] text-white' : 'bg-white dark:bg-[#2C2C2E]'}`}>{v}′</button>
+              ))}
+            </div>
+            <div className="px-5 pt-2 text-[12px] text-[#8E8E93]">ระบบจะจำค่าตัว ลิงก์แผนที่ และเวลาเดินทางไว้ในโปรไฟล์ร้านนี้อัตโนมัติ</div>
+
+            <GroupLabel>โน้ตเพิ่มเติม</GroupLabel>
+            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+              <textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} rows={5} placeholder="เช่น คีย์เพลง, การแต่งกาย, เบอร์ติดต่อผู้จัดการร้าน…" className="w-full px-4 py-3 bg-transparent outline-none text-[16px] resize-none placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+            </div>
+          </div>
+        )}
+
+        {tab === 2 && (
+          <div className="anim-fade">
+            <GroupLabel>หลังเล่นเสร็จ</GroupLabel>
+            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+              <Row label="ยอดทิป (บาท)" icon="volunteer_activism" iconBg="#34C759">
+                <input inputMode="decimal" value={f.tips} onChange={(e) => set('tips', e.target.value.replace(/[^\d.,]/g, ''))} placeholder="0" className={inputCls + ' tnum font-semibold'} />
+              </Row>
+            </div>
+            <div className="flex gap-2 px-4 pt-2">
+              {[100, 200, 500, 1000].map((v) => (
+                <button key={v} onClick={() => set('tips', String(addMoney(parseMoney(f.tips), v)))} className="flex-1 h-8 rounded-full text-[13px] font-semibold tnum bg-white dark:bg-[#2C2C2E] active:bg-[#34C759] active:text-white">+{v}</button>
+              ))}
+              <button onClick={() => set('tips', '')} className="h-8 px-3 rounded-full text-[13px] font-semibold bg-white dark:bg-[#2C2C2E] text-[#8E8E93]">ล้าง</button>
+            </div>
+            <div className="mx-4 mt-5 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+              <Row label={f.isPaid ? 'รับเงินแล้ว' : 'ยังค้างจ่าย'} icon={f.isPaid ? 'paid' : 'pending_actions'} iconBg={f.isPaid ? '#34C759' : '#FF9500'}>
+                <Switch checked={f.isPaid} onChange={(v) => set('isPaid', v)} label="สถานะการรับเงิน" />
+              </Row>
+            </div>
+            <div className="mx-4 mt-5 rounded-[16px] p-4 text-white" style={{ background: 'linear-gradient(145deg,#312E81,#1E1B4B)' }}>
+              <div className="flex justify-between text-[14px] text-white/75"><span>ค่าตัว</span><span className="tnum">{fmtMoney(parseMoney(f.baseFee))}</span></div>
+              <div className="flex justify-between text-[14px] text-white/75 mt-1"><span>ทิป</span><span className="tnum">{fmtMoney(parseMoney(f.tips))}</span></div>
+              <div className="h-px bg-white/15 my-2.5" />
+              <div className="flex justify-between items-end"><span className="text-[14px] font-semibold">รวมรายได้งานนี้</span><span className="text-[26px] font-bold tnum">{fmtMoney(total)}</span></div>
+              {f.status === 'cancelled' && <div className="text-[12px] text-[#FF8A80] mt-1">งานถูกแคนเซิล — จะไม่นำมารวมในรายได้</div>}
+              {f.status === 'pending' && <div className="text-[12px] text-[#FFE066] mt-1">งานยังรอคอนเฟิร์ม — นับเป็นยอดคาดการณ์</div>}
+            </div>
+            {!isEdit && rec.enabled && <div className="px-5 pt-3 text-[12px] text-[#8E8E93]">* ทิปและสถานะรับเงินจะบันทึกให้เฉพาะงานแรกของชุดร้านประจำ</div>}
+          </div>
+        )}
+
+        <div className="px-4 pt-6 space-y-2.5">
+          {tab < 2 ? (
+            <div className="flex gap-2.5">
+              <button onClick={() => setTab(tab + 1)} className="flex-1 h-[50px] rounded-[14px] bg-white dark:bg-[#2C2C2E] text-[16px] font-semibold text-[#5856D6] dark:text-[#A5A3FF]">ถัดไป: {tabs[tab + 1].l}</button>
+              <button onClick={() => submit()} disabled={!valid} className={`flex-1 h-[50px] rounded-[14px] text-[16px] font-semibold text-white ${valid ? 'bg-[#5856D6] active:opacity-85' : 'bg-[#5856D6]/40'}`}>{isEdit ? 'บันทึก' : recDates.length > 1 ? `บันทึก ${recDates.length} งาน` : 'บันทึกเลย'}</button>
+            </div>
+          ) : (
+            <button onClick={() => submit()} disabled={!valid} className={`w-full h-[50px] rounded-[14px] text-[16px] font-semibold text-white ${valid ? 'bg-[#5856D6] active:opacity-85' : 'bg-[#5856D6]/40'}`}>บันทึก</button>
+          )}
+          {isEdit && (
+            <div className="rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden mt-4">
+              <button onClick={() => window.open(calendarUrl({ ...initial, ...formToData(f) }), '_blank', 'noopener')} className="w-full h-[50px] text-[16px] text-[#007AFF] dark:text-[#0A84FF] flex items-center justify-center gap-1.5"><Icon name="event" size={20} />เพิ่มลง Google Calendar</button>
+              <Sep />
+              {f.status !== 'cancelled' && (<>
+                <button onClick={() => submit({ status: 'cancelled' })} className="w-full h-[50px] text-[16px] text-[#FF9500] flex items-center justify-center gap-1.5"><Icon name="event_busy" size={20} />แคนเซิลงานนี้</button>
+                <Sep />
+              </>)}
+              <button onClick={() => onDelete(initial)} className="w-full h-[50px] text-[16px] text-[#FF3B30] flex items-center justify-center gap-1.5"><Icon name="delete" size={20} />ลบงาน</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/* =====================================================================
+   BATCH RETROACTIVE ENTRY
+   ===================================================================== */
+function BatchSheet({ gigs, presets, bands, onClose, onSave }) {
+  const y = addDays(todayStr(), -1);
+  const blank = (prev) => ({ key: uid(), date: prev ? addDays(prev.date, 1) : y, startTime: prev?.startTime || '21:00', endTime: prev?.endTime || '23:00', venueName: prev?.venueName || '', bandName: prev?.bandName || '', baseFee: prev?.baseFee || '', tips: '', isPaid: true });
+  const [rows, setRows] = useState(() => [blank()]);
+  const upd = (key, k, v) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, [k]: v } : r)));
+  const presetFor = (name) => { const n = name.trim().toLowerCase(); const k = Object.keys(presets).find((x) => x.toLowerCase() === n); return k ? presets[k] : null; };
+  const onVenueBlur = (r) => {
+    const p = presetFor(r.venueName);
+    if (p) setRows((rs) => rs.map((x) => (x.key === r.key ? { ...x, baseFee: x.baseFee || (p.baseFee ? String(p.baseFee) : ''), bandName: x.bandName || p.bandName || '' } : x)));
+  };
+  const status = (r) => {
+    const empty = !r.venueName.trim();
+    const ok = isValidDate(r.date) && isValidTime(r.startTime) && isValidTime(r.endTime) && !empty;
+    return { empty, ok };
+  };
+  const conflictKeys = useMemo(() => {
+    const set = new Set();
+    const pending = [];
+    rows.forEach((r) => {
+      const s = status(r);
+      if (!s.ok) return;
+      const cand = { id: r.key, date: r.date, startTime: r.startTime, endTime: r.endTime, status: 'confirmed', travelMinutes: 0 };
+      if (findIssues(cand, [...gigs, ...pending]).conflicts.length) set.add(r.key);
+      pending.push(cand);
+    });
+    return set;
+  }, [rows, gigs]);
+  const validRows = rows.filter((r) => status(r).ok);
+  const invalidCount = rows.filter((r) => { const s = status(r); return !s.ok && !s.empty; }).length;
+  const sumS = validRows.reduce((a, r) => a + toSatang(parseMoney(r.baseFee)) + toSatang(parseMoney(r.tips)), 0) / 100;
+  const cell = 'h-10 px-2 rounded-[8px] bg-[#F2F2F7] dark:bg-[#3A3A3C] outline-none text-[14px] w-full';
+
+  return (
+    <Sheet onClose={onClose} full z={60}>
+      <div className="pt-4 px-2 flex items-center justify-between shrink-0">
+        <button onClick={onClose} className="h-10 px-3 text-[17px] text-[#5856D6] dark:text-[#A5A3FF]">ยกเลิก</button>
+        <div className="text-[17px] font-semibold">กรอกงานย้อนหลัง</div>
+        <button disabled={!validRows.length || invalidCount > 0} onClick={() => onSave(validRows)} className={`h-10 px-3 text-[17px] font-semibold ${validRows.length && !invalidCount ? 'text-[#5856D6] dark:text-[#A5A3FF]' : 'text-[#C7C7CC] dark:text-[#48484A]'}`}>บันทึก</button>
+      </div>
+      <div className="px-4 pb-2 text-[13px] text-[#8E8E93] shrink-0">กรอกได้หลายแถว เลื่อนตารางซ้าย-ขวาได้ · บันทึกเป็นสถานะ “คอนเฟิร์ม” · แถวที่ไม่มีชื่อร้านจะถูกข้าม</div>
+      <datalist id="dl-venues">{Object.keys(presets).map((v) => <option key={v} value={v} />)}</datalist>
+      <datalist id="dl-bands">{bands.map((b) => <option key={b} value={b} />)}</datalist>
+      <div className="flex-1 overflow-auto">
+        <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] inline-block min-w-[calc(100%-2rem)]">
+          <table className="text-left border-separate border-spacing-0">
+            <thead>
+              <tr className="text-[12px] text-[#8E8E93] font-semibold">
+                {['#', 'วันที่', 'เริ่ม', 'เลิก', 'ชื่อร้าน *', 'ชื่อวง', 'ค่าตัว', 'ทิป', 'รับเงิน', ''].map((h, i) => (
+                  <th key={i} className={`px-1.5 py-2 font-semibold whitespace-nowrap border-b border-black/[0.08] dark:border-white/[0.1] ${i === 0 ? 'sticky left-0 bg-white dark:bg-[#2C2C2E] z-10 pl-3' : ''}`}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const s = status(r);
+                const bad = !s.ok && !s.empty;
+                const conflict = conflictKeys.has(r.key);
+                return (
+                  <tr key={r.key} className={bad ? 'bg-[#FF3B30]/[0.06]' : conflict ? 'bg-[#FF3B30]/[0.04]' : ''}>
+                    <td className="sticky left-0 bg-white dark:bg-[#2C2C2E] z-10 pl-3 pr-1 text-[12px] text-[#8E8E93] tnum">
+                      {conflict ? <Icon name="warning" fill size={16} className="text-[#FF3B30]" title="คิวชน" /> : i + 1}
+                    </td>
+                    <td className="p-1"><input type="date" value={r.date} onChange={(e) => upd(r.key, 'date', e.target.value)} className={cell + ' w-[140px] text-left'} /></td>
+                    <td className="p-1"><input type="time" value={r.startTime} onChange={(e) => upd(r.key, 'startTime', e.target.value)} className={cell + ' w-[92px]'} /></td>
+                    <td className="p-1"><input type="time" value={r.endTime} onChange={(e) => upd(r.key, 'endTime', e.target.value)} className={cell + ' w-[92px]'} /></td>
+                    <td className="p-1"><input list="dl-venues" value={r.venueName} placeholder="ชื่อร้าน" onBlur={() => onVenueBlur(r)} onChange={(e) => upd(r.key, 'venueName', e.target.value)} className={cell + ` w-[170px] ${bad && !r.venueName.trim() ? 'ring-2 ring-[#FF3B30]' : ''}`} /></td>
+                    <td className="p-1"><input list="dl-bands" value={r.bandName} placeholder="ชื่อวง" onChange={(e) => upd(r.key, 'bandName', e.target.value)} className={cell + ' w-[140px]'} /></td>
+                    <td className="p-1"><input inputMode="decimal" value={r.baseFee} placeholder="0" onChange={(e) => upd(r.key, 'baseFee', e.target.value.replace(/[^\d.,]/g, ''))} className={cell + ' w-[90px] text-right tnum'} /></td>
+                    <td className="p-1"><input inputMode="decimal" value={r.tips} placeholder="0" onChange={(e) => upd(r.key, 'tips', e.target.value.replace(/[^\d.,]/g, ''))} className={cell + ' w-[80px] text-right tnum'} /></td>
+                    <td className="p-1 text-center"><input type="checkbox" checked={r.isPaid} onChange={(e) => upd(r.key, 'isPaid', e.target.checked)} className="w-5 h-5 accent-[#34C759]" /></td>
+                    <td className="p-1 pr-2"><button aria-label="ลบแถว" onClick={() => setRows((rs) => (rs.length > 1 ? rs.filter((x) => x.key !== r.key) : [blank()]))} className="w-9 h-9 rounded-full flex items-center justify-center text-[#FF3B30] active:bg-[#FF3B30]/10"><Icon name="remove_circle" fill size={20} /></button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-4 pt-3 flex gap-2.5">
+          <button onClick={() => setRows((rs) => [...rs, blank(rs[rs.length - 1])])} className="h-11 px-5 rounded-[12px] bg-white dark:bg-[#2C2C2E] text-[#5856D6] dark:text-[#A5A3FF] font-semibold flex items-center gap-1"><Icon name="add" size={20} />เพิ่มแถว</button>
+          <button onClick={() => setRows((rs) => [...rs, ...Array.from({ length: 5 }, (_, k) => blank())].map((r, idx, arr) => r))} className="h-11 px-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] text-[#8E8E93] font-semibold">+5 แถวว่าง</button>
+        </div>
+        <div className="mx-4 mt-4 mb-4 rounded-[14px] bg-white dark:bg-[#2C2C2E] p-4 sheet-pad">
+          <div className="flex justify-between text-[14px]"><span className="text-[#8E8E93]">พร้อมบันทึก</span><span className="font-semibold tnum">{validRows.length} งาน</span></div>
+          <div className="flex justify-between text-[14px] mt-1"><span className="text-[#8E8E93]">รวมรายได้</span><span className="font-bold tnum">{fmtMoney(sumS)}</span></div>
+          {invalidCount > 0 && <div className="text-[13px] st-cancelled mt-2">มี {invalidCount} แถวที่ข้อมูลไม่ครบ/ไม่ถูกต้อง</div>}
+          {conflictKeys.size > 0 && <div className="text-[13px] st-cancelled mt-1 flex items-center gap-1"><Icon name="warning" size={15} fill />{conflictKeys.size} แถวทับซ้อนกับคิวที่มีอยู่ (บันทึกได้ แต่ควรตรวจสอบ)</div>}
+          <button disabled={!validRows.length || invalidCount > 0} onClick={() => onSave(validRows)} className={`mt-3 w-full h-[50px] rounded-[14px] text-white font-semibold ${validRows.length && !invalidCount ? 'bg-[#5856D6]' : 'bg-[#5856D6]/40'}`}>บันทึก {validRows.length} งานพร้อมกัน</button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/* =====================================================================
+   TAB BAR
+   ===================================================================== */
+function TabBar({ tab, setTab, onAdd }) {
+  const Item = ({ id, icon, label }) => {
+    const on = tab === id;
+    return (
+      <button onClick={() => setTab(id)} className={`flex-1 flex flex-col items-center justify-center gap-0.5 pt-2 ${on ? 'text-[#5856D6] dark:text-[#A5A3FF]' : 'text-[#999999] dark:text-[#8E8E93]'}`}>
+        <Icon name={icon} fill={on} size={26} />
+        <span className="text-[10px] font-semibold">{label}</span>
+      </button>
+    );
+  };
+  return (
+    <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md z-40 tabbar-pad bg-[#F9F9F9]/80 dark:bg-[#1C1C1E]/75 backdrop-blur-xl backdrop-saturate-150 border-t border-black/[0.1] dark:border-white/[0.1]">
+      <div className="flex items-stretch h-[54px]">
+        <Item id="home" icon="home" label="หน้าหลัก" />
+        <Item id="schedule" icon="calendar_month" label="ตารางงาน" />
+        <div className="flex-1 flex items-start justify-center">
+          <button onClick={onAdd} aria-label="เพิ่มคิวงาน" className="-mt-5 w-[60px] h-[60px] rounded-full text-white flex items-center justify-center shadow-[0_8px_20px_-6px_rgba(49,46,129,0.7)] active:scale-95 transition-transform ring-4 ring-[#F2F2F7] dark:ring-black" style={{ background: 'linear-gradient(145deg,#4F46E5 0%,#312E81 55%,#1E1B4B 100%)' }}>
+            <Icon name="add" size={34} />
+          </button>
+        </div>
+        <Item id="finance" icon="account_balance_wallet" label="บัญชี" />
+      </div>
+    </nav>
+  );
+}
+
+/* =====================================================================
+   APP
+   ===================================================================== */
+function applyScope(gigs, original, updated, scope) {
+  const gid = original.recurringGroupId;
+  if (scope === 'this' || !gid) return gigs.map((g) => (g.id === original.id ? updated : g));
+  const patch = {};
+  SERIES_FIELDS.forEach((k) => { if (updated[k] !== original[k]) patch[k] = updated[k]; });
+  const ts = Date.now();
+  if (scope === 'following') {
+    // แยกชุดใหม่ตั้งแต่วันนี้ไป — งานที่ผ่านมาแล้ว (ก่อนวันนี้) ไม่ถูกแตะเลย ประวัติ/ยอดเงินคงเดิม
+    const newGid = uid();
+    return gigs.map((g) => {
+      if (g.id === original.id) return { ...updated, recurringGroupId: newGid };
+      if (g.recurringGroupId === gid && g.date >= original.date) return { ...g, ...patch, recurringGroupId: newGid, updatedAt: ts };
+      return g;
+    });
+  }
+  return gigs.map((g) => (g.id === original.id ? updated : g.recurringGroupId === gid ? { ...g, ...patch, updatedAt: ts } : g));
+}
+
+function App() {
+  const [gigs, setGigs] = useState(loadGigs);
+  const [venues, setVenues] = useState(loadVenues);
+  const [tab, setTab] = useState('home');
+  const [theme, setTheme] = useTheme();
+  const [sheet, setSheet] = useState(null);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [action, setAction] = useState(null);
+  const [toastState, setToastState] = useState(null);
+  const now = useNow();
+  const toastTimer = useRef(null);
+
+  useEffect(() => { try { localStorage.setItem(KEY_GIGS, JSON.stringify(gigs)); } catch (e) {} }, [gigs]);
+  useEffect(() => { try { localStorage.setItem(KEY_VENUES, JSON.stringify(venues)); } catch (e) {} }, [venues]);
+  useEffect(() => { window.scrollTo(0, 0); }, [tab]);
+
+  const toast = useCallback((msg, icon) => {
+    clearTimeout(toastTimer.current);
+    setToastState({ msg, icon, id: uid() });
+    toastTimer.current = setTimeout(() => setToastState(null), 2400);
+  }, []);
+
+  const presets = useMemo(() => {
+    const p = {};
+    [...gigs].sort((a, b) => (a.updatedAt - b.updatedAt) || cmpGig(a, b)).forEach((g) => {
+      p[g.venueName] = { startTime: g.startTime, endTime: g.endTime, baseFee: g.baseFee, mapsUrl: g.mapsUrl, travelMinutes: g.travelMinutes, bandName: g.bandName, count: (p[g.venueName]?.count || 0) + 1 };
+    });
+    Object.entries(venues).forEach(([k, v]) => { p[k] = { ...(p[k] || {}), ...v, count: p[k]?.count || 0 }; });
+    return p;
+  }, [gigs, venues]);
+  const bands = useMemo(() => {
+    const c = {};
+    gigs.forEach((g) => { if (g.bandName) c[g.bandName] = (c[g.bandName] || 0) + 1; });
+    return Object.keys(c).sort((a, b) => c[b] - c[a]);
+  }, [gigs]);
+
+  const rememberVenue = (d) => {
+    if (!d.venueName) return;
+    setVenues((v) => ({ ...v, [d.venueName]: { startTime: d.startTime, endTime: d.endTime, baseFee: d.baseFee, mapsUrl: d.mapsUrl || v[d.venueName]?.mapsUrl || '', travelMinutes: d.travelMinutes, bandName: d.bandName, updatedAt: Date.now() } }));
+  };
+
+  const openCreate = (date) => setSheet({ mode: 'create', key: uid(), gig: { date: isValidDate(date) ? date : todayStr(), startTime: '21:00', endTime: '23:00', venueName: '', status: 'pending', bandName: '', baseFee: 0, mapsUrl: '', travelMinutes: 30, notes: '', tips: 0, isPaid: false, recurringGroupId: null } });
+  const openEdit = (g) => setSheet({ mode: 'edit', key: g.id, gig: g });
+
+  const askScope = (original, kind, onPick) => {
+    const gid = original.recurringGroupId;
+    const group = gigs.filter((g) => g.recurringGroupId === gid);
+    const following = group.filter((g) => g.date >= original.date).length;
+    const past = group.length - following;
+    const destructive = kind !== 'edit';
+    setAction({
+      title: kind === 'cancel' ? 'แคนเซิลงานร้านประจำ' : kind === 'delete' ? 'ลบงานร้านประจำ' : 'แก้ไขงานร้านประจำ',
+      message: `“${original.venueName}” อยู่ในชุดร้านประจำ ${group.length} งาน ต้องการให้มีผลกับงานใด?${past ? ` (มีงานที่ผ่านมาแล้ว ${past} งาน)` : ''}`,
+      actions: [
+        { label: 'เฉพาะวันนี้วันเดียว', destructive, onClick: () => onPick('this') },
+        { label: `ตั้งแต่วันนี้เป็นต้นไป (${following} งาน)`, destructive, onClick: () => onPick('following') },
+        { label: `ทั้งหมดทุกสัปดาห์ (${group.length} งาน)`, destructive, onClick: () => onPick('all') },
+      ],
+    });
+  };
+
+  const handleSave = ({ mode, original, data, rec }) => {
+    const ts = Date.now();
+    if (mode === 'create') {
+      const dates = rec && rec.dates.length ? rec.dates : [data.date];
+      const gid = rec && dates.length > 1 ? uid() : null;
+      const created = dates.map((d, i) => ({ ...data, id: uid(), date: d, recurringGroupId: gid, tips: i === 0 ? data.tips : 0, isPaid: i === 0 ? data.isPaid : false, createdAt: ts, updatedAt: ts }));
+      setGigs((p) => [...p, ...created]);
+      rememberVenue(data);
+      setSheet(null);
+      toast(created.length > 1 ? `เพิ่มงานประจำ ${created.length} งานแล้ว` : 'เพิ่มคิวงานแล้ว');
+      return;
+    }
+    const updated = { ...original, ...data, updatedAt: ts };
+    const groupSize = original.recurringGroupId ? gigs.filter((g) => g.recurringGroupId === original.recurringGroupId).length : 0;
+    const seriesChanged = SERIES_FIELDS.some((k) => updated[k] !== original[k]);
+    const commit = (scope) => {
+      setGigs((p) => applyScope(p, original, updated, scope));
+      rememberVenue(updated);
+      setSheet(null);
+      toast(updated.status === 'cancelled' && original.status !== 'cancelled' ? 'แคนเซิลงานแล้ว' : 'บันทึกการแก้ไขแล้ว');
+    };
+    if (groupSize > 1 && seriesChanged) {
+      askScope(original, updated.status === 'cancelled' && original.status !== 'cancelled' ? 'cancel' : 'edit', commit);
+    } else commit('this');
+  };
+
+  const handleDelete = (original) => {
+    const gid = original.recurringGroupId;
+    const groupSize = gid ? gigs.filter((g) => g.recurringGroupId === gid).length : 0;
+    const doDelete = (scope) => {
+      setGigs((p) => p.filter((g) => {
+        if (g.id === original.id) return false;
+        if (!gid || g.recurringGroupId !== gid) return true;
+        if (scope === 'all') return false;
+        if (scope === 'following') return g.date < original.date;
+        return true;
+      }));
+      setSheet(null);
+      toast('ลบงานแล้ว', 'delete');
+    };
+    if (groupSize > 1) askScope(original, 'delete', doDelete);
+    else setAction({ title: 'ลบงานนี้?', message: `${original.venueName} · ${fmtDateShort(original.date)} — ลบแล้วกู้คืนไม่ได้`, actions: [{ label: 'ลบงาน', destructive: true, onClick: () => doDelete('this') }] });
+  };
+
+  const handleLineShare = (cursor) => {
+    const t = todayStr();
+    const mon = addDays(t, -((weekdayOf(t) + 6) % 7));
+    const cy = cursor.y, cm = cursor.m;
+    const mFrom = `${cy}-${pad(cm)}-01`, mTo = `${cy}-${pad(cm)}-${pad(daysInMonth(cy, cm))}`;
+    const doCopy = async (from, to, label) => {
+      const ok = await copyText(buildLineText(gigs, from, to, label));
+      toast(ok ? 'คัดลอกแล้ว — วางใน LINE ได้เลย' : 'คัดลอกไม่สำเร็จ', ok ? 'content_paste' : 'error');
+    };
+    setAction({
+      title: 'ก๊อปปี้คิวงานส่ง LINE',
+      message: 'เลือกช่วงเวลาที่ต้องการ ข้อความจะถูกคัดลอกลงคลิปบอร์ดทันที',
+      actions: [
+        { label: 'สัปดาห์นี้', bold: true, onClick: () => doCopy(mon, addDays(mon, 6), 'สัปดาห์นี้') },
+        { label: 'สัปดาห์หน้า', onClick: () => doCopy(addDays(mon, 7), addDays(mon, 13), 'สัปดาห์หน้า') },
+        { label: `เดือน${monthLabel(cy, cm)}`, onClick: () => doCopy(mFrom, mTo, `เดือน${TH_MONTHS[cm - 1]}`) },
+      ],
+    });
+  };
+
+  const handleBatchSave = (rows) => {
+    const ts = Date.now();
+    const created = rows.map((r) => {
+      const name = r.venueName.trim();
+      const k = Object.keys(presets).find((x) => x.toLowerCase() === name.toLowerCase());
+      const p = k ? presets[k] : null;
+      return normalizeGig({
+        id: uid(), date: r.date, startTime: r.startTime, endTime: r.endTime, venueName: k || name, bandName: r.bandName,
+        status: 'confirmed', baseFee: r.baseFee, tips: r.tips, isPaid: r.isPaid, mapsUrl: p?.mapsUrl || '', travelMinutes: p?.travelMinutes ?? 30,
+        notes: '', recurringGroupId: null, createdAt: ts, updatedAt: ts,
+      });
+    }).filter(Boolean);
+    setGigs((p) => [...p, ...created]);
+    created.forEach((g) => { if (!presets[g.venueName]) rememberVenue(g); });
+    setBatchOpen(false);
+    toast(`บันทึกย้อนหลัง ${created.length} งานแล้ว`);
+  };
+
+  const handleExport = () => {
+    const payload = { app: 'GigFlow', version: 1, exportedAt: new Date().toISOString(), gigs, venues };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `gigflow-backup-${todayStr()}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    toast('ส่งออกไฟล์สำรองแล้ว', 'download');
+  };
+
+  const handleImport = (file) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      let data;
+      try { data = JSON.parse(reader.result); } catch (e) { toast('ไฟล์ไม่ใช่ JSON ที่ถูกต้อง', 'error'); return; }
+      const rawGigs = Array.isArray(data) ? data : data?.gigs;
+      if (!Array.isArray(rawGigs)) { toast('ไม่พบข้อมูลงานในไฟล์', 'error'); return; }
+      const incoming = rawGigs.map(normalizeGig).filter(Boolean);
+      const inVenues = data && typeof data.venues === 'object' && !Array.isArray(data.venues) ? data.venues : {};
+      const skipped = rawGigs.length - incoming.length;
+      setAction({
+        title: `พบ ${incoming.length} งานในไฟล์${skipped ? ` (ข้าม ${skipped} รายการที่ไม่ถูกต้อง)` : ''}`,
+        message: 'ต้องการนำเข้าแบบใด?',
+        actions: [
+          { label: 'รวมกับข้อมูลเดิม', bold: true, onClick: () => {
+            setGigs((p) => { const m = new Map(p.map((g) => [g.id, g])); incoming.forEach((g) => m.set(g.id, g)); return [...m.values()]; });
+            setVenues((v) => ({ ...v, ...inVenues }));
+            toast(`นำเข้า ${incoming.length} งานแล้ว`, 'upload');
+          } },
+          { label: 'แทนที่ข้อมูลทั้งหมด', destructive: true, onClick: () => { setGigs(incoming); setVenues(inVenues); toast('กู้คืนข้อมูลแล้ว', 'upload'); } },
+        ],
+      });
+    };
+    reader.onerror = () => toast('อ่านไฟล์ไม่สำเร็จ', 'error');
+    reader.readAsText(file);
+  };
+
+  const loadDemo = () => {
+    const go = () => { const d = makeDemo(); setGigs(d.gigs); setVenues(d.venues); setTab('home'); toast(`โหลดข้อมูลตัวอย่าง ${d.gigs.length} งานแล้ว`, 'science'); };
+    if (!gigs.length) return go();
+    setAction({ title: 'โหลดข้อมูลตัวอย่าง', message: 'ข้อมูลปัจจุบันทั้งหมดจะถูกแทนที่ (แนะนำให้ Export สำรองก่อน)', actions: [{ label: 'แทนที่ด้วยข้อมูลตัวอย่าง', destructive: true, onClick: go }] });
+  };
+  const clearAll = () => setAction({ title: 'ล้างข้อมูลทั้งหมด?', message: `งาน ${gigs.length} รายการและโปรไฟล์ร้านทั้งหมดจะถูกลบถาวร`, actions: [{ label: 'ล้างข้อมูลทั้งหมด', destructive: true, onClick: () => { setGigs([]); setVenues({}); toast('ล้างข้อมูลแล้ว', 'delete'); } }] });
+  const markPaid = (g) => { setGigs((p) => p.map((x) => (x.id === g.id ? { ...x, isPaid: true, updatedAt: Date.now() } : x))); toast(`รับเงิน ${fmtMoney(addMoney(g.baseFee, g.tips))} แล้ว`, 'paid'); };
+
+  return (
+    <div className="min-h-screen">
+      <main className="max-w-md mx-auto min-h-screen relative">
+        {tab === 'home' && <HomeView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onAdd={openCreate} onEdit={openEdit} onDemo={loadDemo} goTab={setTab} />}
+        {tab === 'schedule' && <ScheduleView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onAdd={openCreate} onEdit={openEdit} onLineShare={handleLineShare} />}
+        {tab === 'finance' && <FinanceView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onEdit={openEdit} onMarkPaid={markPaid} onBatch={() => setBatchOpen(true)} onExport={handleExport} onImport={handleImport} onDemo={loadDemo} onClear={clearAll} />}
+      </main>
+      <TabBar tab={tab} setTab={setTab} onAdd={() => openCreate()} />
+      {sheet && <GigSheet key={sheet.key} mode={sheet.mode} initial={sheet.gig} gigs={gigs} presets={presets} bands={bands} onClose={() => setSheet(null)} onSave={handleSave} onDelete={handleDelete} toast={toast} />}
+      {batchOpen && <BatchSheet gigs={gigs} presets={presets} bands={bands} onClose={() => setBatchOpen(false)} onSave={handleBatchSave} />}
+      <ActionSheet config={action} onClose={() => setAction(null)} />
+      <Toast toast={toastState} />
+    </div>
+  );
+}
+
+// expose pure logic for self-tests in the console: window.GigFlowLogic
+window.GigFlowLogic = { gigRange, findIssues, genRecurringDates, applyScope, computeStats, calendarUrl, mapsDirUrl, buildLineText, makeDemo, sumMoney, parseMoney };
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
