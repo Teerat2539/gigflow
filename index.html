@@ -70,6 +70,23 @@
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
 
+<!-- ===================== FIREBASE (Google Login + Cloud Firestore) =====================
+     วางค่าจาก Firebase Console > Project settings > Your apps > Web app > SDK setup and configuration (Config)
+     ถ้าเว้นว่าง apiKey ไว้ แอปจะทำงานแบบ "เครื่องเดียว" (localStorage) โดยไม่ต้องล็อกอิน — ดูขั้นตอนใน SETUP-FIREBASE.md -->
+<script>
+  window.GIGFLOW_FIREBASE_CONFIG = {
+    apiKey: "",
+    authDomain: "",
+    projectId: "",
+    storageBucket: "",
+    messagingSenderId: "",
+    appId: ""
+  };
+</script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+
 <style>
   html, body { -webkit-tap-highlight-color: transparent; }
   body { font-family: 'Inter', 'IBM Plex Sans Thai', -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased; overscroll-behavior-y: none; }
@@ -178,6 +195,11 @@ const parseIntSafe = (s, def = 0) => { const n = parseInt(String(s ?? '').replac
    GENERAL HELPERS
    ===================================================================== */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+/** งานที่กรอกย้อนหลัง (วันที่ก่อนวันนี้) → ปิดจ๊อบอัตโนมัติ: คอนเฟิร์ม + รับเงินแล้ว (ยกเว้นงานที่แคนเซิล) */
+const isPastDate = (d) => isValidDate(d) && d < todayStr();
+const closeRetro = (g) => (isPastDate(g.date) && g.status !== 'cancelled'
+  ? { ...g, isPaid: true, status: g.status === 'pending' ? 'confirmed' : g.status }
+  : g);
 const isHttpUrl = (u) => /^https?:\/\//i.test((u || '').trim());
 
 function normalizeGig(raw) {
@@ -449,6 +471,153 @@ function useNow() {
 }
 
 /* =====================================================================
+   FIREBASE: GOOGLE LOGIN + PER-USER CLOUD STORAGE
+   ข้อมูลของแต่ละคนอยู่ที่ users/{uid}/gigs/{gigId} และ users/{uid}/meta/venues
+   Firestore Security Rules (firestore.rules) อนุญาตให้อ่าน/เขียนได้เฉพาะเจ้าของ uid เท่านั้น
+   ===================================================================== */
+const FB_CFG = window.GIGFLOW_FIREBASE_CONFIG || {};
+const CLOUD_CONFIGURED = !!(FB_CFG.apiKey && FB_CFG.projectId);
+let fbAuth = null, fbDb = null;
+if (CLOUD_CONFIGURED && window.firebase) {
+  try {
+    firebase.initializeApp(FB_CFG);
+    fbDb = firebase.firestore();
+    fbDb.settings({ ignoreUndefinedProperties: true, merge: true });
+    fbDb.enablePersistence({ synchronizeTabs: true }).catch(() => {}); // แคชออฟไลน์ (แยกตามผู้ใช้โดย SDK)
+    fbAuth = firebase.auth();
+  } catch (e) { console.error('Firebase init failed', e); fbAuth = null; fbDb = null; }
+}
+
+const isStandalone = () => window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+function authErrorText(e) {
+  const map = {
+    'auth/popup-closed-by-user': null,
+    'auth/cancelled-popup-request': null,
+    'auth/unauthorized-domain': 'โดเมนนี้ยังไม่ได้รับอนุญาต — เพิ่มใน Firebase Console › Authentication › Settings › Authorized domains',
+    'auth/operation-not-allowed': 'ยังไม่ได้เปิดใช้ Google sign-in ใน Firebase Console › Authentication › Sign-in method',
+    'auth/network-request-failed': 'เชื่อมต่ออินเทอร์เน็ตไม่ได้ ลองใหม่อีกครั้ง',
+    'auth/too-many-requests': 'ลองบ่อยเกินไป กรุณารอสักครู่',
+    'auth/user-disabled': 'บัญชีนี้ถูกระงับการใช้งาน',
+  };
+  if (e && e.code in map) return map[e.code];
+  return `เข้าสู่ระบบไม่สำเร็จ (${e?.code || e?.message || 'unknown'})`;
+}
+async function signInWithGoogle() {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  // แอปที่ "เพิ่มลงหน้าจอโฮม" บน iPhone เปิดป๊อปอัปไม่ได้ → ใช้ redirect แทน
+  if (isStandalone()) return fbAuth.signInWithRedirect(provider);
+  try {
+    await fbAuth.signInWithPopup(provider);
+  } catch (e) {
+    if (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment') return fbAuth.signInWithRedirect(provider);
+    throw e;
+  }
+}
+function useAuthState() {
+  const [st, setSt] = useState({ status: 'loading', user: null, error: null });
+  useEffect(() => {
+    if (!fbAuth) return;
+    fbAuth.getRedirectResult().catch((e) => setSt((s) => ({ ...s, error: authErrorText(e) })));
+    return fbAuth.onAuthStateChanged((u) => setSt((s) => ({ status: u ? 'in' : 'out', user: u, error: u ? null : s.error })));
+  }, []);
+  return [st, setSt];
+}
+
+/** stringify แบบเรียง key เสมอ — ใช้เทียบว่าข้อมูลในเครื่องต่างจากบนคลาวด์หรือไม่ */
+function stableStr(v) {
+  if (Array.isArray(v)) return '[' + v.map(stableStr).join(',') + ']';
+  if (v && typeof v === 'object') return '{' + Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => JSON.stringify(k) + ':' + stableStr(v[k])).join(',') + '}';
+  return JSON.stringify(v ?? null);
+}
+async function commitOps(ops) {
+  // Firestore batch รับได้สูงสุด 500 operations → แบ่งเป็นชุดละ 450
+  const jobs = [];
+  for (let i = 0; i < ops.length; i += 450) {
+    const b = fbDb.batch();
+    ops.slice(i, i + 450).forEach((o) => (o.type === 'set' ? b.set(o.ref, o.data) : b.delete(o.ref)));
+    jobs.push(b.commit());
+  }
+  return Promise.all(jobs);
+}
+
+/**
+ * ซิงก์ state ของแอป (gigs, venues) กับ Firestore ของผู้ใช้คนนั้นแบบสองทาง:
+ *  - รับ: onSnapshot → แทนที่ state ด้วยข้อมูลบนคลาวด์ (รวมการแก้ไขที่ยังรอส่ง)
+ *  - ส่ง: ทุกครั้งที่ state เปลี่ยน → diff กับสำเนาล่าสุดบนคลาวด์ แล้วเขียนเฉพาะรายการที่เปลี่ยน/ลบ
+ */
+function useCloudSync(user, gigs, setGigs, venues, setVenues, toast) {
+  const [ready, setReady] = useState(!user);
+  const [state, setState] = useState(user ? 'loading' : 'local');
+  const remoteGigs = useRef(new Map());
+  const remoteVenues = useRef(null);
+  const got = useRef({ gigs: false, venues: false });
+  const errShown = useRef(false);
+  const base = user ? fbDb.collection('users').doc(user.uid) : null;
+
+  const reportError = useCallback((e) => {
+    console.error('Firestore sync error', e);
+    setState('error');
+    if (!errShown.current) {
+      errShown.current = true;
+      toast(e?.code === 'permission-denied' ? 'ไม่มีสิทธิ์เข้าถึงข้อมูล — ตรวจสอบ Firestore Rules' : 'ซิงก์ข้อมูลไม่สำเร็จ', 'error');
+      setTimeout(() => { errShown.current = false; }, 10000);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    if (!user) return;
+    const markReady = () => { if (got.current.gigs && got.current.venues) setReady(true); };
+    const onListenErr = (e) => { reportError(e); got.current = { gigs: true, venues: true }; setReady(true); };
+    const u1 = base.collection('gigs').onSnapshot({ includeMetadataChanges: true }, (snap) => {
+      const map = new Map(), list = [];
+      snap.forEach((d) => { const g = normalizeGig({ ...d.data(), id: d.id }); if (g) { map.set(g.id, stableStr(g)); list.push(g); } });
+      remoteGigs.current = map;
+      setGigs(list);
+      got.current.gigs = true; markReady();
+      setState(snap.metadata.hasPendingWrites ? 'saving' : snap.metadata.fromCache ? 'offline' : 'synced');
+    }, onListenErr);
+    const u2 = base.collection('meta').doc('venues').onSnapshot((d) => {
+      const obj = {};
+      (d.exists ? d.data().list || [] : []).forEach((v) => { if (v && v.name) { const { name, ...rest } = v; obj[name] = rest; } });
+      remoteVenues.current = stableStr(obj);
+      setVenues(obj);
+      got.current.venues = true; markReady();
+    }, onListenErr);
+    return () => { u1(); u2(); };
+  }, [user && user.uid]);
+
+  useEffect(() => {
+    if (!user || !ready) return;
+    const col = base.collection('gigs');
+    const ops = [], ids = new Set();
+    gigs.forEach((g) => {
+      const n = normalizeGig(g);
+      if (!n) return;
+      ids.add(n.id);
+      const s = stableStr(n);
+      if (remoteGigs.current.get(n.id) !== s) { ops.push({ type: 'set', ref: col.doc(n.id), data: n }); remoteGigs.current.set(n.id, s); }
+    });
+    [...remoteGigs.current.keys()].forEach((id) => { if (!ids.has(id)) { ops.push({ type: 'del', ref: col.doc(id) }); remoteGigs.current.delete(id); } });
+    if (!ops.length) return;
+    setState('saving');
+    commitOps(ops).then(() => setState((s) => (s === 'saving' ? 'synced' : s))).catch(reportError);
+  }, [gigs, ready]);
+
+  useEffect(() => {
+    if (!user || !ready) return;
+    const s = stableStr(venues);
+    if (s === remoteVenues.current) return;
+    remoteVenues.current = s;
+    base.collection('meta').doc('venues')
+      .set({ list: Object.entries(venues).map(([name, v]) => ({ name, ...v })), updatedAt: Date.now() })
+      .catch(reportError);
+  }, [venues, ready]);
+
+  return { ready, state };
+}
+
+/* =====================================================================
    UI PRIMITIVES
    ===================================================================== */
 const Icon = ({ name, fill, className = '', size, style }) => (
@@ -544,9 +713,10 @@ function Sheet({ onClose, children, z = 50, full }) {
 
 function ActionSheet({ config, onClose }) {
   if (!config) return null;
+  const dismiss = () => { config.onCancel?.(); onClose(); };
   return (
     <div className="fixed inset-0 z-[80] flex items-end justify-center">
-      <div className="absolute inset-0 bg-black/40 anim-fade" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/40 anim-fade" onClick={dismiss} />
       <div className="relative w-full max-w-md px-2 sheet-pad anim-sheet">
         <div className="rounded-[14px] overflow-hidden bg-white/85 dark:bg-[#2C2C2E]/85 backdrop-blur-2xl">
           {(config.title || config.message) && (
@@ -562,7 +732,7 @@ function ActionSheet({ config, onClose }) {
             </button>
           ))}
         </div>
-        <button onClick={onClose} className="mt-2 w-full h-[57px] rounded-[14px] bg-white dark:bg-[#2C2C2E] text-[18px] font-semibold text-[#007AFF] dark:text-[#0A84FF] active:bg-[#E5E5EA] dark:active:bg-[#3A3A3C]">
+        <button onClick={dismiss} className="mt-2 w-full h-[57px] rounded-[14px] bg-white dark:bg-[#2C2C2E] text-[18px] font-semibold text-[#007AFF] dark:text-[#0A84FF] active:bg-[#E5E5EA] dark:active:bg-[#3A3A3C]">
           ยกเลิก
         </button>
       </div>
@@ -576,6 +746,85 @@ function Toast({ toast }) {
     <div className="fixed left-1/2 -translate-x-1/2 z-[90] pointer-events-none" style={{ bottom: 'calc(env(safe-area-inset-bottom) + 100px)' }}>
       <div key={toast.id} className="anim-pop flex items-center gap-2 px-4 py-2.5 rounded-full bg-[#1C1C1E]/90 dark:bg-white/90 text-white dark:text-black text-[14px] font-medium shadow-xl backdrop-blur-xl whitespace-nowrap">
         <Icon name={toast.icon || 'check_circle'} fill size={18} className={toast.icon === 'error' ? 'text-[#FF453A]' : 'text-[#34C759]'} />{toast.msg}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Account / sync UI ---------- */
+const SYNC_UI = {
+  loading: { icon: 'cloud_sync', text: 'กำลังโหลดข้อมูล…', cls: 'text-[#8E8E93]' },
+  saving:  { icon: 'cloud_sync', text: 'กำลังบันทึกขึ้นคลาวด์…', cls: 'text-[#007AFF] dark:text-[#0A84FF]' },
+  synced:  { icon: 'cloud_done', text: 'ซิงก์กับบัญชีแล้ว', cls: 'st-confirmed' },
+  offline: { icon: 'cloud_off', text: 'ออฟไลน์ · จะซิงก์อัตโนมัติเมื่อออนไลน์', cls: 'st-issue' },
+  error:   { icon: 'error', text: 'ซิงก์ไม่สำเร็จ', cls: 'st-cancelled' },
+  local:   { icon: 'smartphone', text: 'โหมดเครื่องเดียว (ไม่ได้ล็อกอิน)', cls: 'text-[#8E8E93]' },
+};
+function SyncBadge({ state }) {
+  const s = SYNC_UI[state] || SYNC_UI.local;
+  return <span className={`inline-flex items-center gap-1 text-[12px] font-semibold ${s.cls}`}><Icon name={s.icon} size={15} fill={state === 'synced'} />{s.text}</span>;
+}
+function Avatar({ user, size = 32 }) {
+  const [broken, setBroken] = useState(false);
+  const initial = (user?.displayName || user?.email || '?').trim().charAt(0).toUpperCase();
+  if (user?.photoURL && !broken) {
+    return <img src={user.photoURL} alt="" width={size} height={size} referrerPolicy="no-referrer" onError={() => setBroken(true)} className="rounded-full object-cover shrink-0 ring-2 ring-white dark:ring-[#1C1C1E]" style={{ width: size, height: size }} />;
+  }
+  return <span className="rounded-full shrink-0 flex items-center justify-center text-white font-bold" style={{ width: size, height: size, fontSize: size * 0.45, background: 'linear-gradient(145deg,#4F46E5,#1E1B4B)' }}>{initial}</span>;
+}
+const GoogleG = ({ size = 20 }) => (
+  <svg width={size} height={size} viewBox="0 0 48 48" aria-hidden="true">
+    <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/>
+    <path fill="#FF3D00" d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/>
+    <path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/>
+    <path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/>
+  </svg>
+);
+
+function Splash({ text = 'กำลังโหลด…' }) {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center gap-4">
+      <div className="animate-pulse"><AppLogo size={84} /></div>
+      <div className="text-[15px] text-[#8E8E93]">{text}</div>
+    </div>
+  );
+}
+
+function LoginScreen({ error, setError }) {
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    setBusy(true); setError(null);
+    try { await signInWithGoogle(); } catch (e) { setError(authErrorText(e)); }
+    setBusy(false);
+  };
+  const features = [
+    { i: 'lock', c: '#5856D6', t: 'ข้อมูลของใครของมัน', d: 'คิวงานและรายได้ผูกกับบัญชี Google ของคุณ คนอื่นมองไม่เห็น' },
+    { i: 'devices', c: '#34C759', t: 'ซิงก์ทุกเครื่อง', d: 'เปิดบน iPhone, iPad หรือคอมพิวเตอร์ ข้อมูลตรงกันอัตโนมัติ' },
+    { i: 'cloud_off', c: '#FF9500', t: 'ใช้ได้แม้ไม่มีเน็ต', d: 'บันทึกในเครื่องก่อน แล้วซิงก์ให้เมื่อกลับมาออนไลน์' },
+  ];
+  return (
+    <div className="min-h-screen max-w-md mx-auto flex flex-col px-6 safe-top sheet-pad">
+      <div className="flex-1 flex flex-col items-center justify-center text-center pt-10">
+        <AppLogo size={96} />
+        <h1 className="text-[34px] font-bold tracking-tight mt-5">GigFlow</h1>
+        <p className="text-[16px] text-[#8E8E93] mt-1">ตารางงานและรายได้สำหรับนักดนตรีกลางคืน</p>
+        <div className="mt-9 w-full space-y-4 text-left">
+          {features.map((f) => (
+            <div key={f.t} className="flex gap-3.5 items-start">
+              <span className="w-10 h-10 rounded-[12px] flex items-center justify-center text-white shrink-0" style={{ background: f.c }}><Icon name={f.i} size={22} /></span>
+              <div><div className="text-[15px] font-semibold">{f.t}</div><div className="text-[13px] text-[#8E8E93] leading-snug">{f.d}</div></div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="pt-8 pb-4">
+        {error && <div className="mb-3 rounded-[12px] bg-[#FF3B30]/10 st-cancelled text-[13px] px-3.5 py-2.5 flex gap-2 anim-pop"><Icon name="error" size={18} fill />{error}</div>}
+        <button onClick={go} disabled={busy}
+          className="w-full h-[54px] rounded-[14px] bg-white dark:bg-[#1C1C1E] border border-black/10 dark:border-white/15 shadow-sm flex items-center justify-center gap-3 text-[17px] font-semibold active:scale-[0.99] transition-transform disabled:opacity-60">
+          {busy ? <Icon name="progress_activity" className="animate-spin" /> : <GoogleG size={22} />}
+          {busy ? 'กำลังเข้าสู่ระบบ…' : 'ดำเนินการต่อด้วย Google'}
+        </button>
+        <p className="text-[12px] text-[#8E8E93] text-center mt-3 leading-relaxed">เราใช้แค่ชื่อ อีเมล และรูปโปรไฟล์เพื่อแยกข้อมูลของคุณ<br />ไม่มีการเข้าถึงอีเมล ไดรฟ์ หรือปฏิทินของคุณ</p>
       </div>
     </div>
   );
@@ -781,15 +1030,21 @@ function MonthlySummary({ gigs, onOpen }) {
   );
 }
 
-function HomeView({ gigs, now, theme, setTheme, onAdd, onEdit, onDemo, goTab }) {
+function HomeView({ gigs, now, theme, setTheme, onAdd, onEdit, onDemo, goTab, user, sync, onAccount }) {
   const today = todayStr();
   const upcoming = gigs.filter((g) => g.status !== 'cancelled' && gigRange(g)[1] > now && g.date !== today).sort(cmpGig).slice(0, 6);
   const hour = new Date().getHours();
   const greet = hour < 5 ? 'ดึกแล้ว พักผ่อนบ้างนะ 🌙' : hour < 12 ? 'สวัสดีตอนเช้า ☀️' : hour < 17 ? 'สวัสดีตอนบ่าย 🎵' : 'คืนนี้ร็อกให้สุด 🎸';
   return (
     <div className="page-pad">
-      <PageHeader title="GigFlow" subtitle={`${fmtDateLong(today)}`} logo={<AppLogo size={36} />} right={<ThemeToggle mode={theme} setMode={setTheme} />} />
-      <div className="px-5 pb-3 text-[15px] text-[#8E8E93]">{greet}</div>
+      <PageHeader title="GigFlow" subtitle={`${fmtDateLong(today)}`} logo={<AppLogo size={36} />} right={<>
+        <ThemeToggle mode={theme} setMode={setTheme} />
+        {user && <button onClick={onAccount} aria-label="บัญชีผู้ใช้" className="active:opacity-70"><Avatar user={user} size={32} /></button>}
+      </>} />
+      <div className="px-5 pb-3 flex items-center justify-between gap-2">
+        <span className="text-[15px] text-[#8E8E93] truncate">{user?.displayName ? `${greet.replace(/ [^ ]+$/, '')} คุณ${user.displayName.split(' ')[0]} ${greet.split(' ').pop()}` : greet}</span>
+        {user && <SyncBadge state={sync.state} />}
+      </div>
       <TodayWidget gigs={gigs} now={now} onEdit={onEdit} onAdd={onAdd} onDemo={onDemo} />
       <SectionTitle>สรุปเดือนนี้</SectionTitle>
       <MonthlySummary gigs={gigs} onOpen={() => goTab('finance')} />
@@ -957,7 +1212,7 @@ function ToolRow({ icon, color, label, sub, onClick, destructive }) {
   );
 }
 
-function FinanceView({ gigs, now, theme, setTheme, onEdit, onMarkPaid, onBatch, onExport, onImport, onDemo, onClear }) {
+function FinanceView({ gigs, now, theme, setTheme, onEdit, onMarkPaid, onBatch, onExport, onImport, onDemo, onClear, user, sync, onSignOut, venueCount, onVenues, openPastCount, onClosePast }) {
   const t = todayStr();
   const [mode, setMode] = useState('month');
   const [cur, setCur] = useState(() => ({ y: +t.slice(0, 4), m: +t.slice(5, 7) }));
@@ -1025,9 +1280,37 @@ function FinanceView({ gigs, now, theme, setTheme, onEdit, onMarkPaid, onBatch, 
         )) : <div className="py-6 text-center text-[#8E8E93] text-[14px] flex items-center justify-center gap-1.5"><Icon name="verified" className="text-[#34C759]" fill />เคลียร์ครบทุกงานแล้ว</div>}
       </Card>
 
+      <SectionTitle>บัญชีผู้ใช้</SectionTitle>
+      <Card className="mx-4 overflow-hidden">
+        {user ? (
+          <>
+            <div className="flex items-center gap-3 px-4 py-3.5">
+              <Avatar user={user} size={48} />
+              <div className="flex-1 min-w-0">
+                <div className="text-[17px] font-semibold truncate">{user.displayName || 'ผู้ใช้ GigFlow'}</div>
+                <div className="text-[13px] text-[#8E8E93] truncate">{user.email}</div>
+                <div className="mt-0.5"><SyncBadge state={sync.state} /></div>
+              </div>
+            </div>
+            <Sep />
+            <button onClick={onSignOut} className="w-full h-[48px] text-[16px] text-[#FF3B30] flex items-center justify-center gap-1.5 active:bg-black/[0.04] dark:active:bg-white/[0.06]"><Icon name="logout" size={20} />ออกจากระบบ</button>
+          </>
+        ) : (
+          <div className="flex gap-3 px-4 py-3.5">
+            <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#8E8E93]"><Icon name="smartphone" size={18} /></span>
+            <div className="text-[13px] text-[#8E8E93] leading-snug"><div className="text-[15px] font-semibold text-black dark:text-white">โหมดเครื่องเดียว</div>ยังไม่ได้เชื่อม Firebase จึงยังไม่มีระบบล็อกอิน ข้อมูลเก็บในเบราว์เซอร์นี้เท่านั้น — ดูวิธีตั้งค่าใน SETUP-FIREBASE.md</div>
+          </div>
+        )}
+      </Card>
+
       <SectionTitle>เครื่องมือ & สำรองข้อมูล</SectionTitle>
       <Card className="mx-4 overflow-hidden">
         <ToolRow icon="table_rows" color="#5856D6" label="กรอกงานย้อนหลังรวดเดียว" sub="ตารางแบบ Spreadsheet เพิ่มหลายงานพร้อมกัน" onClick={onBatch} />
+        <Sep />
+        <ToolRow icon="task_alt" color="#34C759" label="ปิดจ๊อบงานที่ผ่านมาทั้งหมด"
+          sub={openPastCount ? `${openPastCount} งานก่อนวันนี้ที่ยังไม่ปิดจ๊อบ → คอนเฟิร์ม + รับเงินแล้ว` : 'งานที่ผ่านมาปิดจ๊อบครบแล้ว'} onClick={onClosePast} />
+        <Sep />
+        <ToolRow icon="storefront" color="#AF52DE" label="ร้านที่บันทึกไว้" sub={`${venueCount} ร้าน · แตะเพื่อดูหรือลบทีละร้าน`} onClick={onVenues} />
         <Sep />
         <ToolRow icon="download" color="#007AFF" label="Export สำรองข้อมูล (.json)" sub={`${gigs.length} งาน`} onClick={onExport} />
         <Sep />
@@ -1040,7 +1323,9 @@ function FinanceView({ gigs, now, theme, setTheme, onEdit, onMarkPaid, onBatch, 
       <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onImport(f); e.target.value = ''; }} />
       <div className="text-center text-[12px] text-[#8E8E93] mt-5 px-8 leading-relaxed flex flex-col items-center gap-2">
         <AppLogo size={28} />
-        ข้อมูลทั้งหมดถูกบันทึกในเครื่องนี้ (localStorage) อัตโนมัติ<br />ไม่มีการส่งข้อมูลขึ้นเซิร์ฟเวอร์ · ควร Export สำรองไว้เป็นระยะ
+        {user
+          ? <>ข้อมูลถูกบันทึกในบัญชีของคุณบน Cloud Firestore อัตโนมัติ<br />เฉพาะเจ้าของบัญชีเท่านั้นที่อ่าน/แก้ไขได้ · ใช้งานออฟไลน์ได้</>
+          : <>ข้อมูลทั้งหมดถูกบันทึกในเครื่องนี้ (localStorage) อัตโนมัติ<br />ไม่มีการส่งข้อมูลขึ้นเซิร์ฟเวอร์ · ควร Export สำรองไว้เป็นระยะ</>}
       </div>
     </div>
   );
@@ -1104,7 +1389,7 @@ function IssueBanners({ issues, multiDates }) {
   );
 }
 
-function GigSheet({ mode, initial, gigs, presets, bands, onClose, onSave, onDelete, toast }) {
+function GigSheet({ mode, initial, gigs, presets, bands, onClose, onSave, onDelete, onDeleteVenue, toast }) {
   const [tab, setTab] = useState(0);
   const [f, setF] = useState(() => initForm(initial));
   const [rec, setRec] = useState({ enabled: false, days: [weekdayOf(initial.date)], weeks: 12 });
@@ -1112,6 +1397,20 @@ function GigSheet({ mode, initial, gigs, presets, bands, onClose, onSave, onDele
   const [applied, setApplied] = useState(null);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const isEdit = mode === 'edit';
+  const isRetro = !isEdit && isPastDate(f.date);
+  // ฟอร์มสะท้อนการปิดจ๊อบอัตโนมัติ; ถ้าผู้ใช้เปลี่ยนเป็นวันอนาคต/เปิดร้านประจำ ให้คืนค่าที่ระบบตั้งให้ (ถ้าผู้ใช้ยังไม่ได้เลือกสถานะเอง)
+  const autoClosed = useRef(false);
+  useEffect(() => {
+    if (isRetro && !rec.enabled) {
+      setF((p) => {
+        if (p.status === 'pending' || autoClosed.current) { autoClosed.current = true; return { ...p, isPaid: true, status: p.status === 'pending' ? 'confirmed' : p.status }; }
+        return { ...p, isPaid: p.status === 'cancelled' ? p.isPaid : true };
+      });
+    } else if (autoClosed.current) {
+      autoClosed.current = false;
+      setF((p) => ({ ...p, isPaid: false, status: p.status === 'confirmed' ? 'pending' : p.status }));
+    }
+  }, [isRetro, rec.enabled]);
   const groupSize = initial.recurringGroupId ? gigs.filter((g) => g.recurringGroupId === initial.recurringGroupId).length : 0;
 
   const valid = isValidDate(f.date) && isValidTime(f.startTime) && isValidTime(f.endTime) && f.venueName.trim().length > 0;
@@ -1207,6 +1506,12 @@ function GigSheet({ mode, initial, gigs, presets, bands, onClose, onSave, onDele
                 </div>
               )}
             </div>
+            {isRetro && (
+              <div className="mx-4 mt-2 rounded-[12px] bg-[#34C759]/12 px-3.5 py-2.5 text-[13px] st-confirmed flex items-start gap-2 anim-fade" style={{ background: 'rgba(52,199,89,0.12)' }}>
+                <Icon name="task_alt" size={18} fill />
+                <span>งานย้อนหลัง — จะบันทึกเป็น <b>ปิดจ๊อบเรียบร้อย</b> (คอนเฟิร์ม + รับเงินแล้ว) อัตโนมัติ{rec.enabled ? ' เฉพาะวันที่ผ่านมาแล้วในชุดนี้' : ''}</span>
+              </div>
+            )}
 
             <GroupLabel>ร้าน / สถานที่ *</GroupLabel>
             <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
@@ -1223,15 +1528,20 @@ function GigSheet({ mode, initial, gigs, presets, bands, onClose, onSave, onDele
                 <div className="border-t border-black/[0.08] dark:border-white/[0.1]">
                   <div className="px-4 pt-2 text-[11px] font-semibold text-[#8E8E93] uppercase">ร้านที่เคยบันทึก (Venue Presets)</div>
                   {suggestions.map((s) => (
-                    <button key={s.name} onMouseDown={(e) => e.preventDefault()} onClick={() => { applyPreset(s); setFocusVenue(false); document.activeElement?.blur(); }}
-                      className="w-full flex items-center gap-3 px-4 py-2.5 text-left active:bg-black/5 dark:active:bg-white/5">
-                      <Icon name="history" size={18} className="text-[#8E8E93]" />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[15px] font-medium truncate">{s.name}</div>
-                        <div className="text-[12px] text-[#8E8E93] tnum truncate">{s.startTime}–{s.endTime}{s.baseFee ? ` · ${fmtMoney(s.baseFee)}` : ''}{s.travelMinutes !== undefined ? ` · เดินทาง ${s.travelMinutes} นาที` : ''}</div>
-                      </div>
-                      <Icon name="north_west" size={16} className="text-[#C7C7CC]" />
-                    </button>
+                    <div key={s.name} className="flex items-center pr-2 active:bg-black/5 dark:active:bg-white/5">
+                      <button onMouseDown={(e) => e.preventDefault()} onClick={() => { applyPreset(s); setFocusVenue(false); document.activeElement?.blur(); }}
+                        className="flex-1 min-w-0 flex items-center gap-3 pl-4 py-2.5 text-left">
+                        <Icon name="history" size={18} className="text-[#8E8E93]" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[15px] font-medium truncate">{s.name}</div>
+                          <div className="text-[12px] text-[#8E8E93] tnum truncate">{s.startTime}–{s.endTime}{s.baseFee ? ` · ${fmtMoney(s.baseFee)}` : ''}{s.travelMinutes !== undefined ? ` · เดินทาง ${s.travelMinutes} นาที` : ''}</div>
+                        </div>
+                      </button>
+                      <button aria-label={`ลบร้าน ${s.name} ออกจากรายการ`} onMouseDown={(e) => e.preventDefault()} onClick={() => onDeleteVenue(s.name)}
+                        className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-[#C7C7CC] hover:text-[#FF3B30] active:text-[#FF3B30] active:bg-[#FF3B30]/10">
+                        <Icon name="close" size={18} />
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -1242,7 +1552,7 @@ function GigSheet({ mode, initial, gigs, presets, bands, onClose, onSave, onDele
               {STATUS_ORDER.map((k) => {
                 const s = STATUS[k], on = f.status === k;
                 return (
-                  <button key={k} onClick={() => set('status', k)}
+                  <button key={k} onClick={() => { autoClosed.current = false; set('status', k); }}
                     className={`h-12 rounded-[12px] px-3 flex items-center gap-2 text-[15px] font-semibold transition-all border-2 ${on ? 'bg-white dark:bg-[#2C2C2E]' : 'bg-white/60 dark:bg-[#2C2C2E]/50 border-transparent text-black/60 dark:text-white/60'}`}
                     style={on ? { borderColor: s.color } : {}}>
                     <Icon name={s.icon} fill={on} size={20} style={{ color: s.color }} />
@@ -1364,9 +1674,12 @@ function GigSheet({ mode, initial, gigs, presets, bands, onClose, onSave, onDele
             </div>
             <div className="mx-4 mt-5 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
               <Row label={f.isPaid ? 'รับเงินแล้ว' : 'ยังค้างจ่าย'} icon={f.isPaid ? 'paid' : 'pending_actions'} iconBg={f.isPaid ? '#34C759' : '#FF9500'}>
-                <Switch checked={f.isPaid} onChange={(v) => set('isPaid', v)} label="สถานะการรับเงิน" />
+                {isRetro && !rec.enabled
+                  ? <span className="text-[13px] font-semibold st-confirmed flex items-center gap-1"><Icon name="lock" size={15} />ปิดจ๊อบอัตโนมัติ</span>
+                  : <Switch checked={f.isPaid} onChange={(v) => set('isPaid', v)} label="สถานะการรับเงิน" />}
               </Row>
             </div>
+            {isRetro && <div className="px-5 pt-2 text-[12px] text-[#8E8E93]">งานที่วันที่ผ่านมาแล้วจะถูกบันทึกว่ารับเงินแล้วเสมอ (แก้ไขภายหลังได้จากหน้าแก้ไขงาน)</div>}
             <div className="mx-4 mt-5 rounded-[16px] p-4 text-white" style={{ background: 'linear-gradient(145deg,#312E81,#1E1B4B)' }}>
               <div className="flex justify-between text-[14px] text-white/75"><span>ค่าตัว</span><span className="tnum">{fmtMoney(parseMoney(f.baseFee))}</span></div>
               <div className="flex justify-between text-[14px] text-white/75 mt-1"><span>ทิป</span><span className="tnum">{fmtMoney(parseMoney(f.tips))}</span></div>
@@ -1399,6 +1712,56 @@ function GigSheet({ mode, initial, gigs, presets, bands, onClose, onSave, onDele
               <button onClick={() => onDelete(initial)} className="w-full h-[50px] text-[16px] text-[#FF3B30] flex items-center justify-center gap-1.5"><Icon name="delete" size={20} />ลบงาน</button>
             </div>
           )}
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/* =====================================================================
+   SAVED VENUES (Venue Presets) — ดู/ลบทีละร้าน
+   ===================================================================== */
+function VenueSheet({ presets, onClose, onDelete }) {
+  const [q, setQ] = useState('');
+  const list = Object.entries(presets)
+    .map(([name, v]) => ({ name, ...v }))
+    .filter((v) => !q.trim() || v.name.toLowerCase().includes(q.trim().toLowerCase()))
+    .sort((a, b) => (b.count || 0) - (a.count || 0) || a.name.localeCompare(b.name, 'th'));
+  return (
+    <Sheet onClose={onClose} full z={60}>
+      <div className="pt-4 px-2 flex items-center justify-between shrink-0">
+        <span className="w-[72px]" />
+        <div className="text-[17px] font-semibold">ร้านที่บันทึกไว้</div>
+        <button onClick={onClose} className="h-10 px-3 w-[72px] text-[17px] font-semibold text-[#5856D6] dark:text-[#A5A3FF]">เสร็จ</button>
+      </div>
+      <div className="px-4 pt-2 pb-2 shrink-0">
+        <div className="flex items-center gap-2 h-9 px-2.5 rounded-[10px] bg-[#767680]/[0.12] dark:bg-[#767680]/[0.24]">
+          <Icon name="search" size={18} className="text-[#8E8E93]" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหาร้าน" className="flex-1 bg-transparent outline-none text-[16px] placeholder:text-[#8E8E93]" />
+          {q && <button onClick={() => setQ('')} aria-label="ล้าง"><Icon name="cancel" fill size={17} className="text-[#8E8E93]" /></button>}
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto no-scrollbar sheet-pad">
+        <div className="px-5 pb-1.5 text-[13px] text-[#8E8E93]">ใช้สำหรับเติมค่าตัว เวลาเล่น แผนที่ และเวลาเดินทางอัตโนมัติ · การลบร้านไม่ลบคิวงานเดิม</div>
+        <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+          {list.length ? list.map((v, i) => (
+            <React.Fragment key={v.name}>
+              {i > 0 && <Sep />}
+              <div className="flex items-center gap-3 pl-4 pr-2 py-2.5">
+                <span className="w-[34px] h-[34px] rounded-[9px] flex items-center justify-center text-white shrink-0 bg-[#AF52DE]"><Icon name="storefront" size={19} /></span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[16px] font-semibold truncate">{v.name}</div>
+                  <div className="text-[12px] text-[#8E8E93] tnum truncate">
+                    {[isValidTime(v.startTime) && isValidTime(v.endTime) ? `${v.startTime}–${v.endTime}` : null, v.baseFee ? fmtMoney(v.baseFee) : null, v.travelMinutes !== undefined ? `เดินทาง ${v.travelMinutes} นาที` : null, `${v.count || 0} งาน`].filter(Boolean).join(' · ')}
+                  </div>
+                </div>
+                {isHttpUrl(v.mapsUrl) && (
+                  <button onClick={() => openUrl(v.mapsUrl)} aria-label={`เปิดแผนที่ ${v.name}`} className="w-9 h-9 rounded-full flex items-center justify-center text-[#34C759] active:bg-[#34C759]/10"><Icon name="map" size={20} /></button>
+                )}
+                <button onClick={() => onDelete(v.name)} aria-label={`ลบร้าน ${v.name}`} className="w-9 h-9 rounded-full flex items-center justify-center text-[#FF3B30] active:bg-[#FF3B30]/10"><Icon name="delete" size={20} /></button>
+              </div>
+            </React.Fragment>
+          )) : <div className="py-10 text-center text-[15px] text-[#8E8E93]">{q ? 'ไม่พบร้านที่ค้นหา' : 'ยังไม่มีร้านที่บันทึกไว้'}</div>}
         </div>
       </div>
     </Sheet>
@@ -1447,7 +1810,7 @@ function BatchSheet({ gigs, presets, bands, onClose, onSave }) {
         <div className="text-[17px] font-semibold">กรอกงานย้อนหลัง</div>
         <button disabled={!validRows.length || invalidCount > 0} onClick={() => onSave(validRows)} className={`h-10 px-3 text-[17px] font-semibold ${validRows.length && !invalidCount ? 'text-[#5856D6] dark:text-[#A5A3FF]' : 'text-[#C7C7CC] dark:text-[#48484A]'}`}>บันทึก</button>
       </div>
-      <div className="px-4 pb-2 text-[13px] text-[#8E8E93] shrink-0">กรอกได้หลายแถว เลื่อนตารางซ้าย-ขวาได้ · บันทึกเป็นสถานะ “คอนเฟิร์ม” · แถวที่ไม่มีชื่อร้านจะถูกข้าม</div>
+      <div className="px-4 pb-2 text-[13px] text-[#8E8E93] shrink-0">กรอกได้หลายแถว เลื่อนตารางซ้าย-ขวาได้ · บันทึกเป็นสถานะ “คอนเฟิร์ม” · งานก่อนวันนี้จะ <b className="st-confirmed">ปิดจ๊อบ (รับเงินแล้ว)</b> อัตโนมัติ · แถวที่ไม่มีชื่อร้านจะถูกข้าม</div>
       <datalist id="dl-venues">{Object.keys(presets).map((v) => <option key={v} value={v} />)}</datalist>
       <datalist id="dl-bands">{bands.map((b) => <option key={b} value={b} />)}</datalist>
       <div className="flex-1 overflow-auto">
@@ -1455,7 +1818,7 @@ function BatchSheet({ gigs, presets, bands, onClose, onSave }) {
           <table className="text-left border-separate border-spacing-0">
             <thead>
               <tr className="text-[12px] text-[#8E8E93] font-semibold">
-                {['#', 'วันที่', 'เริ่ม', 'เลิก', 'ชื่อร้าน *', 'ชื่อวง', 'ค่าตัว', 'ทิป', 'รับเงิน', ''].map((h, i) => (
+                {['#', 'วันที่', 'เริ่ม', 'เลิก', 'ชื่อร้าน *', 'ชื่อวง', 'ค่าตัว', 'ทิป', 'สถานะ', ''].map((h, i) => (
                   <th key={i} className={`px-1.5 py-2 font-semibold whitespace-nowrap border-b border-black/[0.08] dark:border-white/[0.1] ${i === 0 ? 'sticky left-0 bg-white dark:bg-[#2C2C2E] z-10 pl-3' : ''}`}>{h}</th>
                 ))}
               </tr>
@@ -1477,7 +1840,11 @@ function BatchSheet({ gigs, presets, bands, onClose, onSave }) {
                     <td className="p-1"><input list="dl-bands" value={r.bandName} placeholder="ชื่อวง" onChange={(e) => upd(r.key, 'bandName', e.target.value)} className={cell + ' w-[140px]'} /></td>
                     <td className="p-1"><input inputMode="decimal" value={r.baseFee} placeholder="0" onChange={(e) => upd(r.key, 'baseFee', e.target.value.replace(/[^\d.,]/g, ''))} className={cell + ' w-[90px] text-right tnum'} /></td>
                     <td className="p-1"><input inputMode="decimal" value={r.tips} placeholder="0" onChange={(e) => upd(r.key, 'tips', e.target.value.replace(/[^\d.,]/g, ''))} className={cell + ' w-[80px] text-right tnum'} /></td>
-                    <td className="p-1 text-center"><input type="checkbox" checked={r.isPaid} onChange={(e) => upd(r.key, 'isPaid', e.target.checked)} className="w-5 h-5 accent-[#34C759]" /></td>
+                    <td className="p-1 text-center whitespace-nowrap">
+                      {isPastDate(r.date)
+                        ? <span className="text-[11px] font-semibold st-confirmed px-2 py-[3px] rounded-full inline-flex items-center gap-0.5" style={{ background: 'rgba(52,199,89,0.15)' }}><Icon name="task_alt" size={13} />ปิดจ๊อบ</span>
+                        : <span className="text-[11px] font-semibold text-[#8E8E93] px-2 py-[3px] rounded-full bg-[#F2F2F7] dark:bg-[#3A3A3C]">รอเล่น</span>}
+                    </td>
                     <td className="p-1 pr-2"><button aria-label="ลบแถว" onClick={() => setRows((rs) => (rs.length > 1 ? rs.filter((x) => x.key !== r.key) : [blank()]))} className="w-9 h-9 rounded-full flex items-center justify-center text-[#FF3B30] active:bg-[#FF3B30]/10"><Icon name="remove_circle" fill size={20} /></button></td>
                   </tr>
                 );
@@ -1551,9 +1918,10 @@ function applyScope(gigs, original, updated, scope) {
   return gigs.map((g) => (g.id === original.id ? updated : g.recurringGroupId === gid ? { ...g, ...patch, updatedAt: ts } : g));
 }
 
-function App() {
-  const [gigs, setGigs] = useState(loadGigs);
-  const [venues, setVenues] = useState(loadVenues);
+function App({ user = null }) {
+  const cloud = !!user;
+  const [gigs, setGigs] = useState(() => (cloud ? [] : loadGigs()));
+  const [venues, setVenues] = useState(() => (cloud ? {} : loadVenues()));
   const [tab, setTab] = useState('home');
   const [theme, setTheme] = useTheme();
   const [sheet, setSheet] = useState(null);
@@ -1563,8 +1931,9 @@ function App() {
   const now = useNow();
   const toastTimer = useRef(null);
 
-  useEffect(() => { try { localStorage.setItem(KEY_GIGS, JSON.stringify(gigs)); } catch (e) {} }, [gigs]);
-  useEffect(() => { try { localStorage.setItem(KEY_VENUES, JSON.stringify(venues)); } catch (e) {} }, [venues]);
+  // โหมดเครื่องเดียวเท่านั้นที่เก็บลง localStorage — โหมดล็อกอินเก็บบน Firestore ของผู้ใช้
+  useEffect(() => { if (!cloud) try { localStorage.setItem(KEY_GIGS, JSON.stringify(gigs)); } catch (e) {} }, [gigs]);
+  useEffect(() => { if (!cloud) try { localStorage.setItem(KEY_VENUES, JSON.stringify(venues)); } catch (e) {} }, [venues]);
   useEffect(() => { window.scrollTo(0, 0); }, [tab]);
 
   const toast = useCallback((msg, icon) => {
@@ -1573,14 +1942,60 @@ function App() {
     toastTimer.current = setTimeout(() => setToastState(null), 2400);
   }, []);
 
+  const sync = useCloudSync(user, gigs, setGigs, venues, setVenues, toast);
+
+  // ย้ายข้อมูลเก่าจากโหมดเครื่องเดียว (ก่อนมีระบบล็อกอิน) ขึ้นบัญชี — ถามครั้งเดียวต่อบัญชี
+  useEffect(() => {
+    if (!cloud || !sync.ready) return;
+    const flag = `gigflow.migrated.${user.uid}`;
+    try { if (localStorage.getItem(flag)) return; } catch (e) { return; }
+    const legacy = loadGigs();
+    if (!legacy.length) return;
+    const legacyVenues = loadVenues();
+    const done = () => { try { localStorage.setItem(flag, '1'); } catch (e) {} };
+    const clearLegacy = () => { try { localStorage.removeItem(KEY_GIGS); localStorage.removeItem(KEY_VENUES); } catch (e) {} };
+    setAction({
+      title: `พบข้อมูลเดิมในเครื่องนี้ ${legacy.length} งาน`,
+      message: `ข้อมูลนี้บันทึกไว้ก่อนมีระบบล็อกอิน ต้องการย้ายขึ้นบัญชี ${user.email || ''} หรือไม่?`,
+      actions: [
+        { label: 'ย้ายขึ้นบัญชีนี้', bold: true, onClick: () => {
+          setGigs((p) => { const m = new Map(p.map((g) => [g.id, g])); legacy.forEach((g) => { if (!m.has(g.id)) m.set(g.id, g); }); return [...m.values()]; });
+          setVenues((v) => ({ ...legacyVenues, ...v }));
+          clearLegacy(); done();
+          toast(`ย้าย ${legacy.length} งานขึ้นบัญชีแล้ว`, 'cloud_upload');
+        } },
+        { label: 'ลบข้อมูลในเครื่องทิ้ง', destructive: true, onClick: () => { clearLegacy(); done(); } },
+      ],
+      onCancel: done,
+    });
+  }, [sync.ready]);
+
+  const askSignOut = () => setAction({
+    title: user?.email,
+    message: 'ออกจากระบบแล้ว ข้อมูลยังอยู่ในบัญชีของคุณ ล็อกอินใหม่เมื่อไหร่ก็กลับมาเหมือนเดิม',
+    actions: [{ label: 'ออกจากระบบ', destructive: true, onClick: () => fbAuth.signOut() }],
+  });
+
   const presets = useMemo(() => {
     const p = {};
     [...gigs].sort((a, b) => (a.updatedAt - b.updatedAt) || cmpGig(a, b)).forEach((g) => {
       p[g.venueName] = { startTime: g.startTime, endTime: g.endTime, baseFee: g.baseFee, mapsUrl: g.mapsUrl, travelMinutes: g.travelMinutes, bandName: g.bandName, count: (p[g.venueName]?.count || 0) + 1 };
     });
-    Object.entries(venues).forEach(([k, v]) => { p[k] = { ...(p[k] || {}), ...v, count: p[k]?.count || 0 }; });
+    Object.entries(venues).forEach(([k, v]) => {
+      if (v && v.deleted) { delete p[k]; return; }   // ร้านที่ผู้ใช้ลบออกจากรายการ (คิวงานเดิมยังอยู่ครบ)
+      p[k] = { ...(p[k] || {}), ...v, count: p[k]?.count || 0 };
+    });
     return p;
   }, [gigs, venues]);
+  const [venueSheetOpen, setVenueSheetOpen] = useState(false);
+  const askDeleteVenue = (name) => setAction({
+    title: `ลบ “${name}” ออกจากร้านที่บันทึกไว้?`,
+    message: 'ร้านนี้จะไม่ขึ้นในรายการแนะนำและจะไม่เติมค่าตัว/เวลา/แผนที่ให้อัตโนมัติอีก คิวงานเดิมของร้านนี้ไม่ถูกลบ (ถ้าบันทึกงานที่ร้านนี้อีกครั้ง ร้านจะกลับมาในรายการเอง)',
+    actions: [{ label: 'ลบร้านนี้', destructive: true, onClick: () => {
+      setVenues((v) => ({ ...v, [name]: { deleted: true, deletedAt: Date.now() } }));
+      toast(`ลบ “${name}” ออกจากรายการแล้ว`, 'delete');
+    } }],
+  });
   const bands = useMemo(() => {
     const c = {};
     gigs.forEach((g) => { if (g.bandName) c[g.bandName] = (c[g.bandName] || 0) + 1; });
@@ -1617,11 +2032,12 @@ function App() {
     if (mode === 'create') {
       const dates = rec && rec.dates.length ? rec.dates : [data.date];
       const gid = rec && dates.length > 1 ? uid() : null;
-      const created = dates.map((d, i) => ({ ...data, id: uid(), date: d, recurringGroupId: gid, tips: i === 0 ? data.tips : 0, isPaid: i === 0 ? data.isPaid : false, createdAt: ts, updatedAt: ts }));
+      const created = dates.map((d, i) => closeRetro({ ...data, id: uid(), date: d, recurringGroupId: gid, tips: i === 0 ? data.tips : 0, isPaid: i === 0 ? data.isPaid : false, createdAt: ts, updatedAt: ts }));
+      const retro = created.filter((g) => isPastDate(g.date) && g.status !== 'cancelled').length;
       setGigs((p) => [...p, ...created]);
       rememberVenue(data);
       setSheet(null);
-      toast(created.length > 1 ? `เพิ่มงานประจำ ${created.length} งานแล้ว` : 'เพิ่มคิวงานแล้ว');
+      toast((created.length > 1 ? `เพิ่มงานประจำ ${created.length} งานแล้ว` : 'เพิ่มคิวงานแล้ว') + (retro ? ` · ปิดจ๊อบย้อนหลัง ${retro} งาน` : ''));
       return;
     }
     const updated = { ...original, ...data, updatedAt: ts };
@@ -1684,10 +2100,10 @@ function App() {
       const p = k ? presets[k] : null;
       return normalizeGig({
         id: uid(), date: r.date, startTime: r.startTime, endTime: r.endTime, venueName: k || name, bandName: r.bandName,
-        status: 'confirmed', baseFee: r.baseFee, tips: r.tips, isPaid: r.isPaid, mapsUrl: p?.mapsUrl || '', travelMinutes: p?.travelMinutes ?? 30,
+        status: 'confirmed', baseFee: r.baseFee, tips: r.tips, isPaid: false, mapsUrl: p?.mapsUrl || '', travelMinutes: p?.travelMinutes ?? 30,
         notes: '', recurringGroupId: null, createdAt: ts, updatedAt: ts,
       });
-    }).filter(Boolean);
+    }).filter(Boolean).map(closeRetro);
     setGigs((p) => [...p, ...created]);
     created.forEach((g) => { if (!presets[g.venueName]) rememberVenue(g); });
     setBatchOpen(false);
@@ -1737,18 +2153,38 @@ function App() {
     if (!gigs.length) return go();
     setAction({ title: 'โหลดข้อมูลตัวอย่าง', message: 'ข้อมูลปัจจุบันทั้งหมดจะถูกแทนที่ (แนะนำให้ Export สำรองก่อน)', actions: [{ label: 'แทนที่ด้วยข้อมูลตัวอย่าง', destructive: true, onClick: go }] });
   };
-  const clearAll = () => setAction({ title: 'ล้างข้อมูลทั้งหมด?', message: `งาน ${gigs.length} รายการและโปรไฟล์ร้านทั้งหมดจะถูกลบถาวร`, actions: [{ label: 'ล้างข้อมูลทั้งหมด', destructive: true, onClick: () => { setGigs([]); setVenues({}); toast('ล้างข้อมูลแล้ว', 'delete'); } }] });
+  const clearAll = () => setAction({ title: 'ล้างข้อมูลทั้งหมด?', message: `งาน ${gigs.length} รายการและโปรไฟล์ร้านทั้งหมดจะถูกลบถาวร${cloud ? ' (รวมถึงในบัญชีบนคลาวด์ทุกเครื่อง)' : ''}`, actions: [{ label: 'ล้างข้อมูลทั้งหมด', destructive: true, onClick: () => { setGigs([]); setVenues({}); toast('ล้างข้อมูลแล้ว', 'delete'); } }] });
+  // งานก่อนวันนี้ที่ยังไม่ปิดจ๊อบ (ยังไม่รับเงิน หรือยังรอคอนเฟิร์ม) — ไม่รวมงานที่แคนเซิล
+  const isOpenPast = (g) => isPastDate(g.date) && g.status !== 'cancelled' && (!g.isPaid || g.status === 'pending');
+  const openPast = gigs.filter(isOpenPast);
+  const askClosePast = () => {
+    if (!openPast.length) { toast('งานที่ผ่านมาปิดจ๊อบครบแล้ว', 'task_alt'); return; }
+    const pend = openPast.filter((g) => g.status === 'pending').length;
+    const money = openPast.filter((g) => !g.isPaid).reduce((a, g) => a + toSatang(g.baseFee) + toSatang(g.tips), 0) / 100;
+    setAction({
+      title: `ปิดจ๊อบงานที่ผ่านมา ${openPast.length} งาน?`,
+      message: `ทุกงานก่อนวันนี้จะถูกตั้งเป็น “รับเงินแล้ว” (ยอดค้างจ่ายรวม ${fmtMoney(money)})${pend ? ` และงานรอคอนเฟิร์ม ${pend} งานจะเปลี่ยนเป็นคอนเฟิร์ม` : ''} · ไม่แตะงานที่แคนเซิลและงานตั้งแต่วันนี้เป็นต้นไป`,
+      actions: [{ label: `ปิดจ๊อบ ${openPast.length} งาน`, bold: true, onClick: () => {
+        const ts = Date.now();
+        setGigs((p) => p.map((g) => (isOpenPast(g) ? { ...closeRetro(g), updatedAt: ts } : g)));
+        toast(`ปิดจ๊อบ ${openPast.length} งานแล้ว`, 'task_alt');
+      } }],
+    });
+  };
   const markPaid = (g) => { setGigs((p) => p.map((x) => (x.id === g.id ? { ...x, isPaid: true, updatedAt: Date.now() } : x))); toast(`รับเงิน ${fmtMoney(addMoney(g.baseFee, g.tips))} แล้ว`, 'paid'); };
+
+  if (!sync.ready) return <Splash text="กำลังโหลดข้อมูลของคุณ…" />;
 
   return (
     <div className="min-h-screen">
       <main className="max-w-md mx-auto min-h-screen relative">
-        {tab === 'home' && <HomeView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onAdd={openCreate} onEdit={openEdit} onDemo={loadDemo} goTab={setTab} />}
+        {tab === 'home' && <HomeView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onAdd={openCreate} onEdit={openEdit} onDemo={loadDemo} goTab={setTab} user={user} sync={sync} onAccount={askSignOut} />}
         {tab === 'schedule' && <ScheduleView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onAdd={openCreate} onEdit={openEdit} onLineShare={handleLineShare} />}
-        {tab === 'finance' && <FinanceView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onEdit={openEdit} onMarkPaid={markPaid} onBatch={() => setBatchOpen(true)} onExport={handleExport} onImport={handleImport} onDemo={loadDemo} onClear={clearAll} />}
+        {tab === 'finance' && <FinanceView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onEdit={openEdit} onMarkPaid={markPaid} onBatch={() => setBatchOpen(true)} onExport={handleExport} onImport={handleImport} onDemo={loadDemo} onClear={clearAll} user={user} sync={sync} onSignOut={askSignOut} venueCount={Object.keys(presets).length} onVenues={() => setVenueSheetOpen(true)} openPastCount={openPast.length} onClosePast={askClosePast} />}
       </main>
       <TabBar tab={tab} setTab={setTab} onAdd={() => openCreate()} />
-      {sheet && <GigSheet key={sheet.key} mode={sheet.mode} initial={sheet.gig} gigs={gigs} presets={presets} bands={bands} onClose={() => setSheet(null)} onSave={handleSave} onDelete={handleDelete} toast={toast} />}
+      {sheet && <GigSheet key={sheet.key} mode={sheet.mode} initial={sheet.gig} gigs={gigs} presets={presets} bands={bands} onDeleteVenue={askDeleteVenue} onClose={() => setSheet(null)} onSave={handleSave} onDelete={handleDelete} toast={toast} />}
+      {venueSheetOpen && <VenueSheet presets={presets} onClose={() => setVenueSheetOpen(false)} onDelete={askDeleteVenue} />}
       {batchOpen && <BatchSheet gigs={gigs} presets={presets} bands={bands} onClose={() => setBatchOpen(false)} onSave={handleBatchSave} />}
       <ActionSheet config={action} onClose={() => setAction(null)} />
       <Toast toast={toastState} />
@@ -1759,7 +2195,32 @@ function App() {
 // expose pure logic for self-tests in the console: window.GigFlowLogic
 window.GigFlowLogic = { gigRange, findIssues, genRecurringDates, applyScope, computeStats, calendarUrl, mapsDirUrl, buildLineText, makeDemo, sumMoney, parseMoney };
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+/* =====================================================================
+   ROOT: ถ้าตั้งค่า Firebase แล้ว → ต้องล็อกอินด้วย Google ก่อนใช้งาน (ข้อมูลแยกตามบัญชี)
+   ===================================================================== */
+function AuthGate() {
+  const [st, setSt] = useAuthState();
+  const setError = (error) => setSt((s) => ({ ...s, error }));
+  if (st.status === 'loading') return <Splash />;
+  if (st.status === 'out') return <LoginScreen error={st.error} setError={setError} />;
+  return <App key={st.user.uid} user={st.user} />;
+}
+function Root() {
+  if (!CLOUD_CONFIGURED) return <App />;
+  if (!fbAuth) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-8 text-center">
+        <AppLogo size={72} />
+        <div className="text-[17px] font-semibold">โหลดระบบล็อกอินไม่สำเร็จ</div>
+        <div className="text-[14px] text-[#8E8E93]">กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต หรือค่า Firebase config ในไฟล์ index.html</div>
+        <button onClick={() => location.reload()} className="h-11 px-6 rounded-full bg-[#5856D6] text-white font-semibold">ลองใหม่</button>
+      </div>
+    );
+  }
+  return <AuthGate />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
 </script>
 </body>
 </html>

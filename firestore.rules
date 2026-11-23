@@ -1,0 +1,33 @@
+rules_version = '2';
+
+// GigFlow — แต่ละคนอ่าน/เขียนได้เฉพาะข้อมูลใต้ users/{uid ของตัวเอง} เท่านั้น
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    // คิวงาน: users/{uid}/gigs/{gigId}
+    match /users/{userId}/gigs/{gigId} {
+      allow read, delete: if isOwner(userId);
+      allow create, update: if isOwner(userId)
+        && request.resource.data.id == gigId
+        && request.resource.data.date is string
+        && request.resource.data.venueName is string
+        && request.resource.data.baseFee is number
+        && request.resource.data.tips is number
+        && request.resource.data.status in ['confirmed', 'pending', 'issue', 'cancelled'];
+    }
+
+    // โปรไฟล์ร้าน: users/{uid}/meta/venues
+    match /users/{userId}/meta/{docId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // ปิดทุกอย่างที่เหลือ
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
