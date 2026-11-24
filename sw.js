@@ -1,10 +1,10 @@
 /* GigFlow service worker — ให้ติดตั้งเป็นแอปได้ และเปิดใช้งานได้แม้ออฟไลน์
    - หน้าแอป (index.html): โหลดจากเน็ตก่อน → ได้เวอร์ชันล่าสุดเสมอ, ถ้าออฟไลน์ใช้สำเนาในเครื่อง
    - ไลบรารี/ฟอนต์/ไอคอน: ใช้สำเนาในเครื่องทันที แล้วอัปเดตเบื้องหลัง
-   - ไม่แตะคำขอข้อมูล/ล็อกอิน (Firestore, Auth, Routes API) */
-const CACHE = 'gigflow-cache-v1';
+   - ไม่แตะคำขอล็อกอินและข้อมูล (Google Sign-In, Google Drive, Routes API) */
+const CACHE = 'gigflow-cache-v2';
 const CORE = ['./', './index.html', './manifest.json', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
-const CACHEABLE_HOSTS = ['unpkg.com', 'cdn.tailwindcss.com', 'fonts.googleapis.com', 'fonts.gstatic.com', 'www.gstatic.com'];
+const CACHEABLE_HOSTS = ['unpkg.com', 'cdn.tailwindcss.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));
@@ -26,8 +26,7 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   const sameOrigin = url.origin === self.location.origin;
 
-  if (sameOrigin && url.pathname.startsWith('/__/')) return;                 // Firebase Auth handler
-  if (url.hostname === 'www.gstatic.com' && !url.pathname.startsWith('/firebasejs/')) return;
+  if (sameOrigin && url.pathname.startsWith('/__/')) return;                 // ไฟล์ระบบของ Firebase Hosting
 
   // หน้าแอป: network-first
   if (req.mode === 'navigate' || (sameOrigin && (url.pathname.endsWith('/') || url.pathname.endsWith('.html')))) {

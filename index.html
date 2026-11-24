@@ -17,11 +17,11 @@
 <script>
   /* ===================== เวอร์ชันแอป =====================
      เปลี่ยนเลขนี้ทุกครั้งที่ deploy เวอร์ชันใหม่ — แอปที่เปิดค้างไว้จะเห็นแถบ "มีอัปเดตใหม่" */
-  window.GIGFLOW_VERSION = '1.5.0';
+  window.GIGFLOW_VERSION = '1.8.0';
   window.GIGFLOW_BUILD_DATE = '2026-11-23';
 
   /* ===================== Google Maps (Routes API) =====================
-     ใช้คำนวณเวลาเดินทาง บ้าน → ร้าน และ ร้าน → ร้าน อัตโนมัติ (ดูวิธีสร้าง key ใน SETUP-FIREBASE.md ข้อ 7)
+     ใช้คำนวณเวลาเดินทาง บ้าน → ร้าน และ ร้าน → ร้าน อัตโนมัติ (ดูวิธีสร้าง key ใน SETUP-GOOGLE.md ข้อ 6)
      เว้นว่างไว้ = ไม่คำนวณอัตโนมัติ (กรอกเวลาเดินทางเอง) */
   window.GIGFLOW_GOOGLE_MAPS_API_KEY = "";
 
@@ -100,22 +100,14 @@
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
 
-<!-- ===================== FIREBASE (Google Login + Cloud Firestore) =====================
-     วางค่าจาก Firebase Console > Project settings > Your apps > Web app > SDK setup and configuration (Config)
-     ถ้าเว้นว่าง apiKey ไว้ แอปจะทำงานแบบ "เครื่องเดียว" (localStorage) โดยไม่ต้องล็อกอิน — ดูขั้นตอนใน SETUP-FIREBASE.md -->
+<!-- ===================== GOOGLE SIGN-IN + GOOGLE DRIVE =====================
+     ล็อกอินด้วย Google แล้วเก็บข้อมูลของแต่ละคนใน Google Drive ของคนนั้นเอง (โฟลเดอร์ซ่อนของแอป — ไม่ต้องมีฐานข้อมูล)
+     วาง OAuth Client ID (ประเภท Web application) จาก Google Cloud Console — ดูขั้นตอนใน SETUP-GOOGLE.md
+     ถ้าเว้นว่างไว้ แอปจะทำงานแบบ "เครื่องเดียว" (localStorage) โดยไม่ต้องล็อกอิน -->
 <script>
-  window.GIGFLOW_FIREBASE_CONFIG = {
-    apiKey: "",
-    authDomain: "",
-    projectId: "",
-    storageBucket: "",
-    messagingSenderId: "",
-    appId: ""
-  };
+  window.GIGFLOW_GOOGLE_CLIENT_ID = "";
 </script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 
 <style>
   html, body { -webkit-tap-highlight-color: transparent; }
@@ -165,15 +157,26 @@ const APP_VERSION = window.GIGFLOW_VERSION || '0.0.0';
 const APP_BUILD_DATE = window.GIGFLOW_BUILD_DATE || '';
 const MAPS_KEY = (window.GIGFLOW_GOOGLE_MAPS_API_KEY || '').trim();
 const ISSUE_ALERT_DAYS = 2;                         // เตือนงานติดปัญหาเมื่อเหลือ ≤ 2 วัน
-const DEFAULT_SETTINGS = { bands: [], homeMapsUrl: '', packMinutes: 15, feePresets: [], bandMembers: {} };
+const DEFAULT_SETTINGS = { bands: [], homeMapsUrl: '', packMinutes: 15, feePresets: [], bandMembers: {}, renewAskedFor: '', trimmedRegular: false };
 const MAX_FEE_PRESETS = 4;
 /** ประเภทงาน */
 const GIG_TYPES = {
   regular: { label: 'งานประจำ', short: 'ประจำ', icon: 'event_repeat', color: '#007AFF' },
   sub:     { label: 'งานแทน', short: 'แทน', icon: 'swap_horiz', color: '#AF52DE' },
   event:   { label: 'งานจ้างรายครั้ง/อีเว้นท์', short: 'อีเว้นท์', icon: 'celebration', color: '#FF2D55' },
+  rehearsal: { label: 'ซ้อม', short: 'ซ้อม', icon: 'piano', color: '#30B0C7' },
 };
-const GIG_TYPE_ORDER = ['regular', 'sub', 'event'];
+const GIG_TYPE_ORDER = ['regular', 'sub', 'event', 'rehearsal'];
+const NO_MONEY_TYPES = new Set(['rehearsal']);                // ซ้อม: ไม่มีค่าตัว/ทิป ไม่นับรายได้
+const isPaidWork = (g) => !NO_MONEY_TYPES.has(g.gigType);
+const DEFAULT_DURATION = 90;                                 // ระยะเวลาเล่นเริ่มต้น 1 ชม. 30 นาที
+const FOLLOWUP_DAYS = { pending: 1, issue: 2 };              // เตือนตามงาน: รอคอนเฟิร์ม 1 วัน, ติดปัญหา 2 วันก่อนงาน
+/** ความหมายของสถานะ (แสดงตอนเลือก) */
+const STATUS_HELP = {
+  confirmed: 'งานนี้ได้รับการยืนยันแล้ว รายละเอียดครบถ้วนแล้ว',
+  pending: 'ดีลไว้แล้ว แต่รอเจ้าของงานคอนเฟิร์ม รายละเอียดอาจเปลี่ยนได้',
+  issue: 'รับงานมาแล้ว แต่ตอนนี้ยังทำงานไม่ได้ — ต้องระบุว่าติดปัญหาอะไร',
+};
 
 const STATUS = {
   confirmed: { label: 'คอนเฟิร์ม',   color: '#34C759', emoji: '✅', icon: 'check_circle' },
@@ -250,7 +253,7 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 /** งานที่กรอกย้อนหลัง (วันที่ก่อนวันนี้) → ปิดจ๊อบอัตโนมัติ: คอนเฟิร์ม + รับเงินแล้ว (ยกเว้นงานที่แคนเซิล) */
 const isPastDate = (d) => isValidDate(d) && d < todayStr();
 const closeRetro = (g) => (isPastDate(g.date) && g.status !== 'cancelled'
-  ? { ...g, isPaid: true, status: g.status === 'pending' ? 'confirmed' : g.status }
+  ? { ...g, isPaid: isPaidWork(g), jobClosed: true, status: g.status === 'pending' ? 'confirmed' : g.status }
   : g);
 const isHttpUrl = (u) => /^https?:\/\//i.test((u || '').trim());
 
@@ -263,18 +266,20 @@ function normalizeGig(raw) {
     endTime: String(raw.endTime || ''),
     venueName: String(raw.venueName || '').trim(),
     status: STATUS[raw.status] ? raw.status : 'pending',
-    issueNote: raw.status === 'issue' ? String(raw.issueNote || '').trim() : '',
+    issueNote: raw.status === 'issue' || (raw.status === 'cancelled' && raw.preCancelStatus === 'issue') ? String(raw.issueNote || '').trim() : '',
     bandName: String(raw.bandName || '').trim(),
     recurringGroupId: raw.recurringGroupId ? String(raw.recurringGroupId) : null,
     // งานเก่าที่ยังไม่มีประเภท: อยู่ในชุดร้านประจำ = งานประจำ, นอกนั้น = งานจ้างรายครั้ง
     gigType: GIG_TYPES[raw.gigType] ? raw.gigType : (raw.recurringGroupId ? 'regular' : 'event'),
     members: Math.min(Math.max(parseInt(raw.members, 10) || 1, 1), 99),
     baseFee: parseMoney(raw.baseFee),
-    mapsUrl: isHttpUrl(raw.mapsUrl) ? String(raw.mapsUrl).trim() : '',
+    mapsUrl: isMapRef(raw.mapsUrl) ? String(raw.mapsUrl).trim() : '',
     travelMinutes: raw.travelMinutes === undefined || raw.travelMinutes === null || raw.travelMinutes === '' ? 30 : parseIntSafe(raw.travelMinutes, 30),
     notes: String(raw.notes || ''),
     tips: parseMoney(raw.tips),
     isPaid: !!raw.isPaid,
+    jobClosed: !!raw.jobClosed,                                          // กดปิดจ๊อบแล้ว
+    preCancelStatus: STATUS[raw.preCancelStatus] ? raw.preCancelStatus : '', // สถานะก่อนแคนเซิล (ใช้ตอนกู้คืน)
     createdAt: Number(raw.createdAt) || Date.now(),
     updatedAt: Number(raw.updatedAt) || Date.now(),
   };
@@ -296,11 +301,12 @@ function normalizeSettings(raw) {
   if (r.bandMembers && typeof r.bandMembers === 'object' && !Array.isArray(r.bandMembers)) {
     Object.entries(r.bandMembers).forEach(([k, v]) => { const n = parseInt(v, 10); if (k.trim() && n >= 1 && n <= 99) bandMembers[k.trim()] = n; });
   }
-  return { bands, homeMapsUrl: String(r.homeMapsUrl || '').trim(), packMinutes: isFinite(pack) ? Math.min(Math.max(pack, 0), 180) : DEFAULT_SETTINGS.packMinutes, feePresets, bandMembers };
+  return { bands, homeMapsUrl: String(r.homeMapsUrl || '').trim(), packMinutes: isFinite(pack) ? Math.min(Math.max(pack, 0), 180) : DEFAULT_SETTINGS.packMinutes, feePresets, bandMembers,
+    renewAskedFor: /^\d{4}-\d{2}$/.test(r.renewAskedFor || '') ? r.renewAskedFor : '', trimmedRegular: !!r.trimmedRegular };
 }
 const loadSettings = () => normalizeSettings(loadJSON(KEY_SETTINGS, DEFAULT_SETTINGS));
 
-/* ---------- ตำแหน่งจากลิงก์ Google Maps / พิกัด ---------- */
+/* ---------- ตำแหน่งจากลิงก์ Google Maps / พิกัด / Plus Code ---------- */
 const isShortMapsLink = (s) => /(^|\/\/)(maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/kgs)/i.test((s || '').trim());
 /** อ่านพิกัดจากลิงก์ Google Maps แบบเต็ม หรือข้อความพิกัด "13.7563, 100.5018" */
 function parseLatLng(s) {
@@ -317,22 +323,108 @@ function parseLatLng(s) {
   if (m) return ok(m[1], m[2]);
   return null;
 }
-/** ปลายทางสำหรับ Routes API จากลิงก์ร้าน: พิกัด หรือชื่อสถานที่ในลิงก์เต็ม — ลิงก์สั้น/ไม่มีลิงก์ = null (กรอกเอง) */
-function routeTargetFromUrl(url) {
-  const u = (url || '').trim();
-  if (!isHttpUrl(u) || isShortMapsLink(u)) return null;
-  const ll = parseLatLng(u);
-  if (ll) return { location: { latLng: { latitude: ll.lat, longitude: ll.lng } } };
-  try {
-    const p = new URL(u);
-    const q = p.searchParams.get('query') || p.searchParams.get('q') || p.searchParams.get('destination');
-    if (q && q.trim()) return { address: q.trim() };
-    const m = p.pathname.match(/\/place\/([^/]+)/);
-    if (m) return { address: decodeURIComponent(m[1].replace(/\+/g, ' ')) };
-  } catch (e) {}
-  return null;
+
+/* ---------- Plus Code (Open Location Code) ---------- */
+const OLC_ALPHA = '23456789CFGHJMPQRVWX';
+const OLC_PAIR_RES = [20, 1, 0.05, 0.0025, 0.000125];
+/** หา Plus Code ในข้อความ (รองรับแบบเต็ม "7P52PGXG+XG" และแบบสั้น "PG2C+3V Bangkok") */
+function findPlusCode(text) {
+  let t = (text || '').trim();
+  try { t = decodeURIComponent(t); } catch (e) {}
+  const m = t.toUpperCase().match(/(^|[^0-9A-Z])([23456789CFGHJMPQRVWX]{4,8})\+([23456789CFGHJMPQRVWX]{2,7})(?![0-9A-Z])/);
+  if (!m || m[2].length % 2) return null;
+  const code = `${m[2]}+${m[3]}`;
+  const after = t.slice(t.toUpperCase().indexOf(code) + code.length).replace(/^[\s,]+/, '').trim();
+  return { code, full: m[2].length === 8, locality: /^https?:/i.test(t) ? '' : after };
 }
-const homeTarget = (settings) => { const ll = parseLatLng(settings.homeMapsUrl); return ll ? { location: { latLng: { latitude: ll.lat, longitude: ll.lng } } } : null; };
+/** แปลง Plus Code แบบเต็ม → พิกัดกลางช่อง */
+function olcDecode(code) {
+  const c = code.replace('+', '').toUpperCase();
+  let lat = 0, lng = 0, latRes = 0, lngRes = 0;
+  for (let i = 0; i < Math.min(c.length, 10); i += 2) {
+    const r = OLC_PAIR_RES[i / 2];
+    lat += OLC_ALPHA.indexOf(c[i]) * r; lng += OLC_ALPHA.indexOf(c[i + 1]) * r;
+    latRes = r; lngRes = r;
+  }
+  for (let i = 10; i < c.length; i++) {
+    latRes /= 5; lngRes /= 4;
+    const d = OLC_ALPHA.indexOf(c[i]);
+    lat += Math.floor(d / 4) * latRes; lng += (d % 4) * lngRes;
+  }
+  return { lat: lat - 90 + latRes / 2, lng: lng - 180 + lngRes / 2, res: latRes };
+}
+/** เข้ารหัสพิกัดเป็น Plus Code (เฉพาะส่วนคู่ 10 ตัว — ใช้หาตัวนำหน้าของรหัสแบบสั้น) */
+function olcEncodePairs(lat, lng) {
+  let la = Math.min(Math.max(lat, -90), 89.9999999) + 90, ln = ((lng + 180) % 360 + 360) % 360;
+  let out = '';
+  OLC_PAIR_RES.forEach((r) => {
+    const a = Math.floor(la / r + 1e-9), b = Math.floor(ln / r + 1e-9);
+    out += OLC_ALPHA[Math.min(a, 19)] + OLC_ALPHA[Math.min(b, 19)];
+    la -= a * r; ln -= b * r;
+  });
+  return out.slice(0, 8) + '+' + out.slice(8);
+}
+/** แปลง Plus Code แบบสั้น → พิกัด โดยใช้ตำแหน่งอ้างอิงใกล้ ๆ (เช่น บ้าน) */
+function olcRecoverNearest(short, ref) {
+  const padLen = 8 - short.indexOf('+');
+  const resolution = Math.pow(20, 2 - padLen / 2);
+  const half = resolution / 2;
+  const prefix = olcEncodePairs(ref.lat, ref.lng).replace('+', '').slice(0, padLen);
+  const area = olcDecode(prefix + short);
+  let { lat, lng } = area;
+  if (ref.lat + half < lat && lat - resolution >= -90) lat -= resolution;
+  else if (ref.lat - half > lat && lat + resolution <= 90) lat += resolution;
+  if (ref.lng + half < lng) lng -= resolution;
+  else if (ref.lng - half > lng) lng += resolution;
+  return { lat, lng };
+}
+
+/**
+ * อ่านตำแหน่งจากข้อความแมพ (ลิงก์เต็ม / พิกัด / Plus Code)
+ * ref = พิกัดอ้างอิง (บ้าน) ใช้ถอด Plus Code แบบสั้นที่ไม่มีชื่อเมือง
+ * คืน { lat, lng, kind } หรือ { address, kind } หรือ { kind: 'short-link' | 'need-locality' | 'none' }
+ */
+function resolveMapRef(text, ref) {
+  const t = (text || '').trim();
+  if (!t) return { kind: 'none' };
+  const pc = findPlusCode(t);
+  if (pc && pc.full) { const d = olcDecode(pc.code); return { lat: d.lat, lng: d.lng, kind: 'pluscode' }; }
+  const ll = parseLatLng(t);
+  if (ll) return { ...ll, kind: isHttpUrl(t) ? 'link' : 'coords' };
+  if (pc) {
+    if (ref) { const d = olcRecoverNearest(pc.code, ref); return { lat: d.lat, lng: d.lng, kind: 'pluscode' }; }
+    if (pc.locality) return { address: `${pc.code} ${pc.locality}`, kind: 'pluscode-address' };
+    if (!isHttpUrl(t)) return { kind: 'need-locality' };
+    // ลิงก์ที่มี Plus Code แบบสั้น เช่น /place/PG2C+3V+Bangkok → ใช้ข้อความในลิงก์ (มีชื่อเมืองอยู่แล้ว) ด้านล่าง
+  }
+  if (isShortMapsLink(t)) return { kind: 'short-link' };
+  if (isHttpUrl(t)) {
+    try {
+      const p = new URL(t);
+      const q = p.searchParams.get('query') || p.searchParams.get('q') || p.searchParams.get('destination');
+      if (q && q.trim()) return { address: q.trim(), kind: 'link' };
+      const m = p.pathname.match(/\/place\/([^/]+)/);
+      if (m) return { address: decodeURIComponent(m[1].replace(/\+/g, ' ')), kind: 'link' };
+    } catch (e) {}
+  }
+  return { kind: 'none' };
+}
+/** ช่องแมพรับได้: ลิงก์ https, พิกัด, หรือ Plus Code */
+const isMapRef = (s) => { const t = (s || '').trim(); return !!t && (isHttpUrl(t) || !!findPlusCode(t) || !!parseLatLng(t)); };
+const toWaypoint = (r) => (r && r.lat !== undefined ? { location: { latLng: { latitude: r.lat, longitude: r.lng } } } : r && r.address ? { address: r.address } : null);
+const homeLatLng = (settings) => { const r = resolveMapRef(settings.homeMapsUrl, null); return r.lat !== undefined ? { lat: r.lat, lng: r.lng } : null; };
+/** ปลายทางสำหรับ Routes API — null = คำนวณไม่ได้ (กรอกเอง) */
+const routeTargetFromUrl = (url, ref) => toWaypoint(resolveMapRef(url, ref));
+const homeTarget = (settings) => toWaypoint(resolveMapRef(settings.homeMapsUrl, null));
+/** อธิบายสถานะช่องแมพให้ผู้ใช้อ่าน */
+function mapRefStatus(text, ref) {
+  const r = resolveMapRef(text, ref);
+  if (r.lat !== undefined) return { ok: true, text: `${r.kind === 'pluscode' ? 'Plus Code' : r.kind === 'coords' ? 'พิกัด' : 'ลิงก์'} → ${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}`, r };
+  if (r.address) return { ok: true, text: r.kind === 'pluscode-address' ? `Plus Code + ชื่อเมือง — ให้ Google หาตำแหน่ง` : `ชื่อสถานที่ในลิงก์: ${r.address}`, r };
+  if (r.kind === 'short-link') return { ok: false, text: 'ลิงก์สั้น (maps.app.goo.gl) อ่านตำแหน่งไม่ได้ — ใช้ Plus Code หรือลิงก์เต็มแทน', r };
+  if (r.kind === 'need-locality') return { ok: false, text: 'Plus Code แบบสั้นต้องมีชื่อเมืองต่อท้าย (เช่น PG2C+3V Bangkok) หรือตั้งตำแหน่งบ้านก่อน', r };
+  return { ok: false, text: text && text.trim() ? 'อ่านตำแหน่งไม่ได้ — ใช้ Plus Code, พิกัด หรือลิงก์ Google Maps แบบเต็ม' : '', r };
+}
 
 async function copyText(text) {
   try {
@@ -374,6 +466,18 @@ function findIssues(cand, gigs, excludeIds = new Set(), needAfter = {}) {
   return res;
 }
 
+/** งานก่อนหน้าในคืนเดียวกัน (จบก่อนงานนี้เริ่ม ไม่เกิน 6 ชม.) — ใช้เป็นจุดออกเดินทาง */
+function findPrevGig(g, gigs) {
+  const [s] = gigRange(g);
+  let prev = null;
+  gigs.forEach((x) => {
+    if (x.id === g.id || !ACTIVE.has(x.status)) return;
+    const [, xe] = gigRange(x);
+    if (xe <= s && s - xe < 6 * 60 && (!prev || xe > gigRange(prev)[1])) prev = x;
+  });
+  return prev;
+}
+
 function genRecurringDates(startDate, days, weeks) {
   const set = new Set(days);
   const out = [];
@@ -384,25 +488,49 @@ function genRecurringDates(startDate, days, weeks) {
   return out;
 }
 
+/* ---------- ระยะเวลาเล่น / เวลาเลิก ---------- */
+const durBetween = (start, end) => { if (!isValidTime(start) || !isValidTime(end)) return DEFAULT_DURATION; const s = toMin(start), e = toMin(end); return e > s ? e - s : e + 1440 - s; };
+const endTimeFrom = (start, dur) => { if (!isValidTime(start)) return ''; const m = (((toMin(start) + dur) % 1440) + 1440) % 1440; return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`; };
+const fmtDurShort = (min) => { const h = Math.floor(min / 60), m = min % 60; return h && m ? `${h} ชม. ${m} นาที` : h ? `${h} ชม.` : `${m} นาที`; };
+const monthEndOf = (d) => { const [y, m] = d.split('-').map(Number); return `${y}-${pad(m)}-${pad(daysInMonth(y, m))}`; };
+/** วันที่ของงานประจำ: ตั้งแต่วันที่เลือก จนถึงสิ้นเดือนนั้น เฉพาะวันในสัปดาห์ที่เลือก */
+function genMonthDates(startDate, days) {
+  if (!isValidDate(startDate) || !days.length) return [];
+  const end = monthEndOf(startDate), out = [];
+  for (let d = startDate; d <= end; d = addDays(d, 1)) if (days.includes(weekdayOf(d))) out.push(d);
+  return out;
+}
+
+/* ---------- ค่าเริ่มต้นของร้าน ----------
+   โลเคชั่น + โน้ตร้าน: ใช้ร่วมกันทุกประเภทงาน
+   เวลาเริ่ม/ระยะเวลา/ค่าตัว/วง/สมาชิก: แยกตามประเภทงาน = ค่าจากครั้งแรกที่กรอก (แก้ได้ในหน้าตั้งค่า) */
+function venueProfile(venues, gigs, name) {
+  const v = venues[name] && !venues[name].deleted ? venues[name] : {};
+  const list = gigs.filter((g) => g.venueName === name).sort(cmpGig);
+  const byType = {};
+  GIG_TYPE_ORDER.forEach((t) => {
+    if (v.defaults && v.defaults[t]) { byType[t] = v.defaults[t]; return; }
+    const first = list.find((g) => g.gigType === t);
+    if (first) byType[t] = { startTime: first.startTime, duration: durBetween(first.startTime, first.endTime), baseFee: first.baseFee, bandName: first.bandName, members: first.members };
+  });
+  const withMap = [...list].reverse().find((g) => g.mapsUrl);
+  return { name, mapsUrl: v.mapsUrl || (withMap ? withMap.mapsUrl : ''), note: v.note || '', byType, count: list.length };
+}
+
 /* =====================================================================
    GOOGLE MAPS & CALENDAR
    ===================================================================== */
 function placeQuery(g) {
-  const url = (g.mapsUrl || '').trim();
-  if (isHttpUrl(url)) {
-    try {
-      const u = new URL(url);
-      const q = u.searchParams.get('query') || u.searchParams.get('q') || u.searchParams.get('destination');
-      if (q) return q;
-      const m = u.pathname.match(/\/place\/([^/]+)/);
-      if (m) return decodeURIComponent(m[1].replace(/\+/g, ' '));
-      const c = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-      if (c) return `${c[1]},${c[2]}`;
-    } catch (e) {}
-  }
-  return g.venueName;
+  const t = (g.mapsUrl || '').trim();
+  if (!t) return g.venueName;
+  const pc = findPlusCode(t);
+  if (pc) return pc.locality ? `${pc.code} ${pc.locality}` : pc.code;          // Google Maps เข้าใจ Plus Code
+  const ll = parseLatLng(t);
+  if (ll) return `${ll.lat},${ll.lng}`;
+  const r = resolveMapRef(t, null);
+  return r.address || g.venueName;
 }
-const mapsPlaceUrl = (g) => (isHttpUrl(g.mapsUrl) ? g.mapsUrl.trim() : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(g.venueName)}`);
+const mapsPlaceUrl = (g) => (isHttpUrl(g.mapsUrl) && !findPlusCode(g.mapsUrl) ? g.mapsUrl.trim() : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(placeQuery(g))}`);
 function mapsDirUrl(from, to) {
   const p = new URLSearchParams({ api: '1' });
   if (from) p.set('origin', placeQuery(from));
@@ -419,7 +547,7 @@ function calendarUrl(g) {
     g.baseFee ? `ค่าตัว: ${fmtMoney(g.baseFee)}` : null,
     g.travelMinutes ? `เผื่อเก็บของ+เดินทาง: ${fmtDur(g.travelMinutes)} (ออกก่อน ${absToTime(s - g.travelMinutes)})` : null,
     g.notes ? `\nโน้ต:\n${g.notes}` : null,
-    isHttpUrl(g.mapsUrl) ? `\nแผนที่: ${g.mapsUrl}` : null,
+    isMapRef(g.mapsUrl) ? `\nแผนที่: ${mapsPlaceUrl(g)}` : null,
     '\n— บันทึกจาก GigFlow',
   ].filter(Boolean).join('\n');
   const p = new URLSearchParams({
@@ -437,10 +565,10 @@ const openUrl = (url) => window.open(url, '_blank', 'noopener,noreferrer');
 /* ---------- งานติดปัญหา: เตือนล่วงหน้า 2 วัน ---------- */
 const daysUntil = (g) => dayNum(g.date) - dayNum(todayStr());
 /** งานติดปัญหาที่ต้องเช็ค: เหลือ ≤ 2 วัน และงานยังไม่จบ */
-const needsIssueCheck = (g, now) => g.status === 'issue' && daysUntil(g) <= ISSUE_ALERT_DAYS && gigRange(g)[1] > now;
+const needsIssueCheck = (g, now) => !!FOLLOWUP_DAYS[g.status] && daysUntil(g) <= FOLLOWUP_DAYS[g.status] && gigRange(g)[1] > now;
 /** นัด "เช็คปัญหา" ใน Google Calendar: 12:00–12:15 ของ 2 วันก่อนงาน (ถ้าเลยเวลานั้นแล้ว ตั้งเป็นอีก ~5 นาทีจากตอนนี้) */
 function issueReminderAbs(g) {
-  let s = dayNum(addDays(g.date, -ISSUE_ALERT_DAYS)) * 1440 + 12 * 60;
+  let s = dayNum(addDays(g.date, -(FOLLOWUP_DAYS[g.status] || ISSUE_ALERT_DAYS))) * 1440 + 12 * 60;
   const n = nowAbs();
   if (s < n) s = Math.ceil((n + 5) / 5) * 5;
   return s;
@@ -448,14 +576,15 @@ function issueReminderAbs(g) {
 function issueCalendarUrl(g) {
   const s = issueReminderAbs(g), e = s + 15;
   const fmt = (abs) => { const p = absToParts(abs); return `${p.date.replace(/-/g, '')}T${pad(p.h)}${pad(p.m)}00`; };
+  const pending = g.status === 'pending';
   const details = [
-    `ปัญหา: ${g.issueNote || '-'}`,
+    pending ? 'งานนี้ยังรอเจ้าของงานคอนเฟิร์ม — ติดต่อเพื่อยืนยันรายละเอียด' : `ปัญหา: ${g.issueNote || '-'}`,
     `งาน: ${fmtDateLong(g.date)} ${g.startTime}–${g.endTime}${g.bandName ? ` (${g.bandName})` : ''}`,
     '',
-    'ถ้าปัญหาเคลียร์แล้ว เปิด GigFlow แล้วกด “ปัญหาเคลียร์แล้ว” เพื่อเปลี่ยนเป็นคอนเฟิร์ม',
+    pending ? 'ถ้าคอนเฟิร์มแล้ว เปิด GigFlow แล้วกด “คอนเฟิร์มแล้ว”' : 'ถ้าปัญหาเคลียร์แล้ว เปิด GigFlow แล้วกด “ปัญหาเคลียร์แล้ว” เพื่อเปลี่ยนเป็นคอนเฟิร์ม',
     '— GigFlow',
   ].join('\n');
-  const p = new URLSearchParams({ action: 'TEMPLATE', text: `⚠️ เช็คปัญหา: ${g.venueName} (${fmtDateShort(g.date)})`, dates: `${fmt(s)}/${fmt(e)}`, details, location: placeQuery(g) });
+  const p = new URLSearchParams({ action: 'TEMPLATE', text: `${pending ? '⏳ ตามคอนเฟิร์ม' : '⚠️ เช็คปัญหา'}: ${g.venueName} (${fmtDateShort(g.date)})`, dates: `${fmt(s)}/${fmt(e)}`, details, location: placeQuery(g) });
   try { const tz = Intl.DateTimeFormat().resolvedOptions().timeZone; if (tz) p.set('ctz', tz); } catch (e) {}
   return `https://calendar.google.com/calendar/render?${p.toString()}`;
 }
@@ -521,8 +650,8 @@ function buildLineText(gigs, from, to, label) {
    ===================================================================== */
 function computeStats(list) {
   const today = todayStr();
-  const income = list.filter((g) => INCOME.has(g.status));
-  const pending = list.filter((g) => g.status === 'pending');
+  const income = list.filter((g) => INCOME.has(g.status) && isPaidWork(g));
+  const pending = list.filter((g) => g.status === 'pending' && isPaidWork(g));
   const fee = sumMoney(income, (g) => g.baseFee);
   const tips = sumMoney(income, tipShare);                       // ทิปส่วนของฉัน (ทิปรวม ÷ สมาชิก)
   const total = addMoney(fee, tips);
@@ -566,7 +695,7 @@ function makeDemo() {
     const past = date < t;
     const g = {
       id: uid(), date, startTime, endTime, ...v, bandName: '', status: 'confirmed', recurringGroupId: null,
-      notes: '', tips: past ? tipsCycle[ti++ % tipsCycle.length] : 0, isPaid: past, createdAt: now, updatedAt: now, ...extra,
+      notes: '', tips: past ? tipsCycle[ti++ % tipsCycle.length] : 0, isPaid: past, jobClosed: past, createdAt: now, updatedAt: now, ...extra,
     };
     g.gigType = g.gigType || (g.recurringGroupId ? 'regular' : 'event');
     g.members = BAND_MEMBERS[g.bandName] || 1;
@@ -576,11 +705,11 @@ function makeDemo() {
   // ชุดร้านประจำ 1: Blue Moon ทุกศุกร์-เสาร์ 21:00–23:00 (ย้อนหลัง 5 สัปดาห์ – ล่วงหน้า 7 สัปดาห์)
   const g1 = uid();
   const start1 = addDays(t, -35);
-  genRecurringDates(start1, [5, 6], 12).filter((d) => d !== t).forEach((d) =>
+  genRecurringDates(start1, [5, 6], 12).filter((d) => d !== t && d <= monthEndOf(t)).forEach((d) =>
     mk(V.blue, d, '21:00', '23:00', { bandName: 'The Midnight Trio', recurringGroupId: g1, notes: 'แต่งกาย: โทนดำ\nเซ็ต 2 ช่วง ช่วงละ 50 นาที' }));
   // ชุดร้านประจำ 2: Rooftop ทุกศุกร์ 23:30–01:00 (ข้ามเที่ยงคืน — ต้องไม่ชนกับเสาร์ 21:00)
   const g2 = uid();
-  genRecurringDates(addDays(t, -28), [5], 10).filter((d) => d !== t).forEach((d) =>
+  genRecurringDates(addDays(t, -28), [5], 10).filter((d) => d !== t && d <= monthEndOf(t)).forEach((d) =>
     mk(V.roof, d, '23:30', '01:00', { bandName: 'Solo Acoustic', recurringGroupId: g2, notes: 'ติดต่อผู้จัดการร้าน: คุณบี 08x-xxx-xxxx' }));
   // งานวันนี้ 2 งาน (วิ่งรอก) — เว้นช่วง 30 นาที แต่ต้องเดินทาง 45 นาที → แจ้งเตือนสีส้ม
   mk(V.river, t, '19:00', '21:00', { bandName: 'Saxy Duo', notes: 'เพลงช้าช่วงดินเนอร์ คีย์ C/F' });
@@ -594,6 +723,7 @@ function makeDemo() {
   mk(V.neon, addDays(t, -17), '21:00', '23:30', { bandName: 'The Midnight Trio' });
   mk(V.river, addDays(t, -24), '19:00', '21:00', { bandName: 'Saxy Duo', status: 'cancelled', tips: 0 });
   mk(V.oldtown, addDays(t, -40), '20:00', '22:00', { bandName: 'Saxy Duo' });
+  mk({ venueName: 'Studio 9 ห้องซ้อม', mapsUrl: 'https://www.google.com/maps/search/?api=1&query=Ratchada+Bangkok', travelMinutes: 30, baseFee: 0 }, addDays(t, 1), '14:00', '17:00', { bandName: 'The Midnight Trio', gigType: 'rehearsal', notes: 'ซ้อมเพลงใหม่ 5 เพลง' });
   // งานที่ผ่านมาแล้วแต่ยังค้างจ่าย
   const pastGigs = gigs.filter((g) => g.date < t && INCOME.has(g.status)).sort(cmpGig);
   pastGigs.slice(-3).forEach((g) => { g.isPaid = false; });
@@ -634,166 +764,267 @@ function useNow() {
 }
 
 /* =====================================================================
-   FIREBASE: GOOGLE LOGIN + PER-USER CLOUD STORAGE
-   ข้อมูลของแต่ละคนอยู่ที่ users/{uid}/gigs/{gigId} และ users/{uid}/meta/venues
-   Firestore Security Rules (firestore.rules) อนุญาตให้อ่าน/เขียนได้เฉพาะเจ้าของ uid เท่านั้น
+   GOOGLE SIGN-IN + GOOGLE DRIVE SYNC (ไม่มีฐานข้อมูลกลาง)
+   - ล็อกอินด้วย Google Identity Services (OAuth token) ขอสิทธิ์: ชื่อ/อีเมล/รูป + drive.appdata
+   - ข้อมูลของแต่ละคนเป็นไฟล์ gigflow-data.json ใน "appDataFolder" (โฟลเดอร์ซ่อนใน Drive ของผู้ใช้เอง
+     ที่เฉพาะแอปนี้เข้าถึงได้ — แอปมองไม่เห็นไฟล์อื่นใน Drive)
+   - ทำงานแบบ offline-first: บันทึกในเครื่องก่อน แล้วซิงก์ขึ้น Drive (ไม่ใช่เรียลไทม์)
+   - รวมข้อมูลหลายเครื่อง: แต่ละงานใช้ updatedAt ล่าสุดชนะ + จำงานที่ถูกลบ (tombstone) ไม่ให้ฟื้นกลับ
    ===================================================================== */
-const FB_CFG = window.GIGFLOW_FIREBASE_CONFIG || {};
-const CLOUD_CONFIGURED = !!(FB_CFG.apiKey && FB_CFG.projectId);
-let fbAuth = null, fbDb = null;
-if (CLOUD_CONFIGURED && window.firebase) {
-  try {
-    firebase.initializeApp(FB_CFG);
-    fbDb = firebase.firestore();
-    fbDb.settings({ ignoreUndefinedProperties: true, merge: true });
-    fbDb.enablePersistence({ synchronizeTabs: true }).catch(() => {}); // แคชออฟไลน์ (แยกตามผู้ใช้โดย SDK)
-    fbAuth = firebase.auth();
-  } catch (e) { console.error('Firebase init failed', e); fbAuth = null; fbDb = null; }
-}
+const GOOGLE_CLIENT_ID = (window.GIGFLOW_GOOGLE_CLIENT_ID || '').trim();
+const CLOUD_CONFIGURED = !!GOOGLE_CLIENT_ID;
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+const AUTH_SCOPES = `openid email profile ${DRIVE_SCOPE}`;
+const DATA_FILE = 'gigflow-data.json';
+const KEY_SESSION = 'gigflow.session.v1';
+const acctKey = (uid) => `gigflow.acct.${uid}.v1`;
+const TOMBSTONE_DAYS = 120;
 
 const isStandalone = () => window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
-function authErrorText(e) {
-  const map = {
-    'auth/popup-closed-by-user': null,
-    'auth/cancelled-popup-request': null,
-    'auth/unauthorized-domain': 'โดเมนนี้ยังไม่ได้รับอนุญาต — เพิ่มใน Firebase Console › Authentication › Settings › Authorized domains',
-    'auth/operation-not-allowed': 'ยังไม่ได้เปิดใช้ Google sign-in ใน Firebase Console › Authentication › Sign-in method',
-    'auth/network-request-failed': 'เชื่อมต่ออินเทอร์เน็ตไม่ได้ ลองใหม่อีกครั้ง',
-    'auth/too-many-requests': 'ลองบ่อยเกินไป กรุณารอสักครู่',
-    'auth/user-disabled': 'บัญชีนี้ถูกระงับการใช้งาน',
-  };
-  if (e && e.code in map) return map[e.code];
-  return `เข้าสู่ระบบไม่สำเร็จ (${e?.code || e?.message || 'unknown'})`;
-}
-async function signInWithGoogle() {
-  const provider = new firebase.auth.GoogleAuthProvider();
-  provider.setCustomParameters({ prompt: 'select_account' });
-  // แอปที่ "เพิ่มลงหน้าจอโฮม" บน iPhone เปิดป๊อปอัปไม่ได้ → ใช้ redirect แทน
-  if (isStandalone()) return fbAuth.signInWithRedirect(provider);
-  try {
-    await fbAuth.signInWithPopup(provider);
-  } catch (e) {
-    if (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment') return fbAuth.signInWithRedirect(provider);
-    throw e;
-  }
-}
-function useAuthState() {
-  const [st, setSt] = useState({ status: 'loading', user: null, error: null });
-  useEffect(() => {
-    if (!fbAuth) return;
-    fbAuth.getRedirectResult().catch((e) => setSt((s) => ({ ...s, error: authErrorText(e) })));
-    return fbAuth.onAuthStateChanged((u) => setSt((s) => ({ status: u ? 'in' : 'out', user: u, error: u ? null : s.error })));
-  }, []);
-  return [st, setSt];
-}
 
-/** stringify แบบเรียง key เสมอ — ใช้เทียบว่าข้อมูลในเครื่องต่างจากบนคลาวด์หรือไม่ */
+/** stringify แบบเรียง key เสมอ — ใช้เทียบข้อมูล */
 function stableStr(v) {
   if (Array.isArray(v)) return '[' + v.map(stableStr).join(',') + ']';
   if (v && typeof v === 'object') return '{' + Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => JSON.stringify(k) + ':' + stableStr(v[k])).join(',') + '}';
   return JSON.stringify(v ?? null);
 }
-async function commitOps(ops) {
-  // Firestore batch รับได้สูงสุด 500 operations → แบ่งเป็นชุดละ 450
-  const jobs = [];
-  for (let i = 0; i < ops.length; i += 450) {
-    const b = fbDb.batch();
-    ops.slice(i, i + 450).forEach((o) => (o.type === 'set' ? b.set(o.ref, o.data) : b.delete(o.ref)));
-    jobs.push(b.commit());
-  }
-  return Promise.all(jobs);
+
+/* ---------- access token (อายุ ~1 ชม. ไม่เก็บถาวร) ---------- */
+const gAuth = { token: null, exp: 0, client: null };
+try { const t = JSON.parse(sessionStorage.getItem('gigflow.tok')); if (t && t.e > Date.now()) { gAuth.token = t.t; gAuth.exp = t.e; } } catch (e) {}
+const gisReady = () => !!(window.google && window.google.accounts && window.google.accounts.oauth2);
+const tokenValid = () => !!gAuth.token && Date.now() < gAuth.exp;
+function clearToken() { gAuth.token = null; gAuth.exp = 0; try { sessionStorage.removeItem('gigflow.tok'); } catch (e) {} }
+
+/** ขอ access token จาก Google — ต้องเรียกตอนผู้ใช้แตะปุ่ม (Google เปิดหน้าต่างป๊อปอัป ถ้าเคยอนุญาตแล้วจะปิดเองทันที) */
+function requestGoogleToken({ prompt = '', hint } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!gisReady()) { reject({ code: 'gis-not-loaded' }); return; }
+    if (!gAuth.client) gAuth.client = google.accounts.oauth2.initTokenClient({ client_id: GOOGLE_CLIENT_ID, scope: AUTH_SCOPES, callback: () => {} });
+    gAuth.client.callback = (resp) => {
+      if (resp.error) { reject({ code: resp.error, message: resp.error_description }); return; }
+      if (!google.accounts.oauth2.hasGrantedAllScopes(resp, DRIVE_SCOPE)) { reject({ code: 'drive-scope-denied' }); return; }
+      gAuth.token = resp.access_token;
+      gAuth.exp = Date.now() + (Number(resp.expires_in || 3600) - 120) * 1000;
+      try { sessionStorage.setItem('gigflow.tok', JSON.stringify({ t: gAuth.token, e: gAuth.exp })); } catch (e) {}
+      resolve(gAuth.token);
+    };
+    gAuth.client.error_callback = (err) => reject({ code: (err && err.type) || 'popup_failed', message: err && err.message });
+    gAuth.client.requestAccessToken(hint ? { prompt, hint } : { prompt });
+  });
+}
+function authErrorText(e) {
+  const map = {
+    popup_closed: null,
+    access_denied: 'ไม่ได้อนุญาตการเข้าถึง — ต้องอนุญาตเพื่อเก็บข้อมูลใน Google Drive ของคุณ',
+    'drive-scope-denied': 'ต้องติ๊กอนุญาตให้ GigFlow เก็บข้อมูลของแอปใน Google Drive ด้วย (ช่องสิทธิ์ Drive ในหน้าขออนุญาต)',
+    popup_failed_to_open: 'เบราว์เซอร์บล็อกหน้าต่างล็อกอิน — อนุญาตป๊อปอัปสำหรับเว็บนี้แล้วลองใหม่',
+    'gis-not-loaded': 'โหลดระบบล็อกอินของ Google ไม่สำเร็จ — ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่',
+    offline: 'ออฟไลน์อยู่ — เชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่',
+  };
+  if (e && e.code in map) return map[e.code];
+  return `เข้าสู่ระบบไม่สำเร็จ (${(e && (e.code || e.message)) || 'unknown'})`;
 }
 
+/* ---------- Google APIs ---------- */
+async function gapi(url, opts = {}) {
+  if (!tokenValid()) throw { code: 'no-token' };
+  let res;
+  try { res = await fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${gAuth.token}` } }); }
+  catch (e) { throw { code: 'offline' }; }
+  if (res.status === 401) { clearToken(); throw { code: 'no-token' }; }
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw { code: res.status, message: (j && j.error && j.error.message) || `HTTP ${res.status}` }; }
+  return res;
+}
+async function fetchGoogleProfile() {
+  const j = await (await gapi('https://www.googleapis.com/oauth2/v3/userinfo')).json();
+  return { uid: String(j.sub), email: j.email || '', displayName: j.name || '', photoURL: j.picture || '' };
+}
+const Drive = {
+  async list() {
+    const q = encodeURIComponent(`name='${DATA_FILE}' and trashed=false`);
+    const j = await (await gapi(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${q}&fields=files(id,modifiedTime)&orderBy=modifiedTime%20desc&pageSize=10`)).json();
+    return j.files || [];
+  },
+  async read(id) { return (await gapi(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`)).json(); },
+  async create(data) {
+    const b = 'gigflow-' + uid();
+    const body = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ name: DATA_FILE, parents: ['appDataFolder'], mimeType: 'application/json' })}\r\n--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(data)}\r\n--${b}--`;
+    return (await gapi('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${b}` }, body })).json();
+  },
+  async update(id, data) { await gapi(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json; charset=UTF-8' }, body: JSON.stringify(data) }); },
+  async remove(id) { await gapi(`https://www.googleapis.com/drive/v3/files/${id}`, { method: 'DELETE' }); },
+};
+
+/* ---------- session (จำว่าใครล็อกอินอยู่บนเครื่องนี้) + แคชข้อมูลในเครื่องแยกตามบัญชี ---------- */
+const loadSession = () => { const s = loadJSON(KEY_SESSION, null); return s && s.uid ? s : null; };
+const saveSession = (u) => { try { if (u) localStorage.setItem(KEY_SESSION, JSON.stringify(u)); else localStorage.removeItem(KEY_SESSION); } catch (e) {} };
+function loadAccount(id) {
+  const a = loadJSON(acctKey(id), null) || {};
+  return {
+    gigs: (Array.isArray(a.gigs) ? a.gigs : []).map(normalizeGig).filter(Boolean),
+    venues: a.venues && typeof a.venues === 'object' && !Array.isArray(a.venues) ? a.venues : {},
+    settings: normalizeSettings(a.settings || DEFAULT_SETTINGS),
+    meta: { deleted: a.deleted || {}, base: a.base || { venues: null, settings: null }, dirty: !!a.dirty, lastSyncAt: a.lastSyncAt || 0, fileId: a.fileId || null },
+  };
+}
+const clearAccountCache = (id) => { try { localStorage.removeItem(acctKey(id)); localStorage.removeItem(`gigflow.migrated.${id}`); } catch (e) {} };
+
+/** รวมข้อมูลในเครื่องกับบน Drive (pure function) */
+function mergeSyncData(local, remote, base) {
+  const cutoff = Date.now() - TOMBSTONE_DAYS * 864e5;
+  const deleted = {};
+  [(remote && remote.deleted) || {}, local.deleted || {}].forEach((d) => Object.entries(d).forEach(([id, ts]) => { if (ts > cutoff) deleted[id] = Math.max(deleted[id] || 0, ts); }));
+  const L = new Map(local.gigs.map((g) => [g.id, g]));
+  const R = new Map(((remote && remote.gigs) || []).map(normalizeGig).filter(Boolean).map((g) => [g.id, g]));
+  const gigs = [];
+  new Set([...L.keys(), ...R.keys()]).forEach((id) => {
+    const l = L.get(id), r = R.get(id);
+    const pick = !l ? r : !r ? l : ((l.updatedAt || 0) >= (r.updatedAt || 0) ? l : r);
+    if (deleted[id] && deleted[id] >= (pick.updatedAt || 0)) return;   // ถูกลบหลังแก้ไขครั้งล่าสุด
+    delete deleted[id];                                                // แก้ไขหลังจากถูกลบ → เก็บไว้
+    gigs.push(pick);
+  });
+  const pickObj = (lv, rv, b, combine) => {
+    const lc = stableStr(lv) !== b;
+    const rc = rv !== undefined && stableStr(rv) !== b;
+    if (lc && rc) return combine(lv, rv);
+    return rc ? rv : lv;
+  };
+  // เครื่องนี้ยังไม่เคยซิงก์ (base ว่าง) และบน Drive มีข้อมูลอยู่แล้ว → ใช้ของบน Drive เป็นหลัก แล้วเติมของในเครื่องที่ยังไม่มี
+  const firstSync = base.venues == null && base.settings == null && !!remote;
+  let venues, settings;
+  if (firstSync) {
+    venues = { ...(local.venues || {}), ...(remote.venues || {}) };
+    const ls = normalizeSettings(local.settings), rs = normalizeSettings(remote.settings);
+    settings = normalizeSettings({ ...rs, bandMembers: { ...ls.bandMembers, ...rs.bandMembers } });
+  } else {
+    venues = pickObj(local.venues || {}, remote ? (remote.venues || {}) : undefined, base.venues, (l, r) => ({ ...r, ...l }));
+    settings = normalizeSettings(pickObj(normalizeSettings(local.settings), remote ? normalizeSettings(remote.settings) : undefined, base.settings, (l) => l));
+  }
+  return { gigs, venues, settings, deleted };
+}
+const syncComparable = (d) => stableStr({
+  gigs: ((d && d.gigs) || []).map(normalizeGig).filter(Boolean).sort((a, b) => (a.id < b.id ? -1 : 1)),
+  venues: (d && d.venues) || {}, settings: normalizeSettings(d && d.settings), deleted: (d && d.deleted) || {},
+});
+
 /**
- * ซิงก์ state ของแอป (gigs, venues) กับ Firestore ของผู้ใช้คนนั้นแบบสองทาง:
- *  - รับ: onSnapshot → แทนที่ state ด้วยข้อมูลบนคลาวด์ (รวมการแก้ไขที่ยังรอส่ง)
- *  - ส่ง: ทุกครั้งที่ state เปลี่ยน → diff กับสำเนาล่าสุดบนคลาวด์ แล้วเขียนเฉพาะรายการที่เปลี่ยน/ลบ
+ * ซิงก์ข้อมูลของบัญชีกับ Google Drive
+ * state: 'local' | 'needs-auth' (ต้องแตะเพื่อยืนยัน Google) | 'saving' | 'synced' | 'offline' | 'error'
  */
-function useCloudSync(user, gigs, setGigs, venues, setVenues, settings, setSettings, toast) {
-  const [ready, setReady] = useState(!user);
-  const [state, setState] = useState(user ? 'loading' : 'local');
-  const remoteGigs = useRef(new Map());
-  const remoteVenues = useRef(null);
-  const remoteSettings = useRef(null);
-  const got = useRef({ gigs: false, venues: false, settings: false });
-  const errShown = useRef(false);
-  const base = user ? fbDb.collection('users').doc(user.uid) : null;
+function useDriveSync(account, initialMeta, gigs, setGigs, venues, setVenues, settings, setSettings, toast) {
+  const cloud = !!account;
+  const meta = useRef(initialMeta);
+  const [state, setState] = useState(cloud ? (tokenValid() ? 'saving' : 'needs-auth') : 'local');
+  const [lastSyncAt, setLastSyncAt] = useState(initialMeta ? initialMeta.lastSyncAt : 0);
+  const [dirty, setDirty] = useState(!!(initialMeta && initialMeta.dirty));
+  const latest = useRef({ gigs, venues, settings });
+  latest.current = { gigs, venues, settings };
+  const prevIds = useRef(new Set(gigs.map((g) => g.id)));
+  const mounted = useRef(false);
+  const applyingRemote = useRef(false);
+  const running = useRef(false);
+  const again = useRef(false);
 
-  const reportError = useCallback((e) => {
-    console.error('Firestore sync error', e);
-    setState('error');
-    if (!errShown.current) {
-      errShown.current = true;
-      toast(e?.code === 'permission-denied' ? 'ไม่มีสิทธิ์เข้าถึงข้อมูล — ตรวจสอบ Firestore Rules' : 'ซิงก์ข้อมูลไม่สำเร็จ', 'error');
-      setTimeout(() => { errShown.current = false; }, 10000);
+  const persist = () => {
+    if (!cloud) return;
+    const m = meta.current;
+    try {
+      localStorage.setItem(acctKey(account.uid), JSON.stringify({ ...latest.current, deleted: m.deleted, base: m.base, dirty: m.dirty, lastSyncAt: m.lastSyncAt, fileId: m.fileId }));
+    } catch (e) {}
+  };
+  const markDirty = () => { meta.current.dirty = true; setDirty(true); if (running.current) again.current = true; };
+
+  // ตรวจการแก้ไขในเครื่อง → จำงานที่ถูกลบ + ตั้งสถานะว่ามีการแก้ไขที่ยังไม่ซิงก์
+  useEffect(() => {
+    if (!cloud) return;
+    const ids = new Set(gigs.map((g) => g.id));
+    if (mounted.current && !applyingRemote.current) {
+      const now = Date.now();
+      prevIds.current.forEach((id) => { if (!ids.has(id)) meta.current.deleted[id] = now; });
+      ids.forEach((id) => { delete meta.current.deleted[id]; });
+      markDirty();
     }
-  }, [toast]);
-
+    prevIds.current = ids;
+    persist();
+  }, [gigs]);
   useEffect(() => {
-    if (!user) return;
-    const markReady = () => { if (got.current.gigs && got.current.venues && got.current.settings) setReady(true); };
-    const onListenErr = (e) => { reportError(e); got.current = { gigs: true, venues: true, settings: true }; setReady(true); };
-    const u3 = base.collection('meta').doc('settings').onSnapshot((d) => {
-      const s = normalizeSettings(d.exists ? d.data() : DEFAULT_SETTINGS);
-      remoteSettings.current = stableStr(s);
-      setSettings(s);
-      got.current.settings = true; markReady();
-    }, onListenErr);
-    const u1 = base.collection('gigs').onSnapshot({ includeMetadataChanges: true }, (snap) => {
-      const map = new Map(), list = [];
-      snap.forEach((d) => { const g = normalizeGig({ ...d.data(), id: d.id }); if (g) { map.set(g.id, stableStr(g)); list.push(g); } });
-      remoteGigs.current = map;
-      setGigs(list);
-      got.current.gigs = true; markReady();
-      setState(snap.metadata.hasPendingWrites ? 'saving' : snap.metadata.fromCache ? 'offline' : 'synced');
-    }, onListenErr);
-    const u2 = base.collection('meta').doc('venues').onSnapshot((d) => {
-      const obj = {};
-      (d.exists ? d.data().list || [] : []).forEach((v) => { if (v && v.name) { const { name, ...rest } = v; obj[name] = rest; } });
-      remoteVenues.current = stableStr(obj);
-      setVenues(obj);
-      got.current.venues = true; markReady();
-    }, onListenErr);
-    return () => { u1(); u2(); u3(); };
-  }, [user && user.uid]);
+    if (!cloud) return;
+    if (mounted.current && !applyingRemote.current) markDirty();
+    persist();
+  }, [venues, settings]);
+  useEffect(() => { mounted.current = true; applyingRemote.current = false; });
 
-  useEffect(() => {
-    if (!user || !ready) return;
-    const n = normalizeSettings(settings);
-    const s = stableStr(n);
-    if (s === remoteSettings.current) return;
-    remoteSettings.current = s;
-    base.collection('meta').doc('settings').set({ ...n, updatedAt: Date.now() }).catch(reportError);
-  }, [settings, ready]);
-
-  useEffect(() => {
-    if (!user || !ready) return;
-    const col = base.collection('gigs');
-    const ops = [], ids = new Set();
-    gigs.forEach((g) => {
-      const n = normalizeGig(g);
-      if (!n) return;
-      ids.add(n.id);
-      const s = stableStr(n);
-      if (remoteGigs.current.get(n.id) !== s) { ops.push({ type: 'set', ref: col.doc(n.id), data: n }); remoteGigs.current.set(n.id, s); }
-    });
-    [...remoteGigs.current.keys()].forEach((id) => { if (!ids.has(id)) { ops.push({ type: 'del', ref: col.doc(id) }); remoteGigs.current.delete(id); } });
-    if (!ops.length) return;
+  const syncNow = useCallback(async (interactive = false) => {
+    if (!cloud || (meta.current && meta.current.disabled)) return;
+    if (!tokenValid()) {
+      if (!interactive) { setState('needs-auth'); return; }
+      try { await requestGoogleToken({ prompt: '', hint: account.email }); }
+      catch (e) { const t = authErrorText(e); if (t) toast(t, 'error'); setState('needs-auth'); return; }
+    }
+    if (navigator.onLine === false) { setState('offline'); return; }
+    if (running.current) { again.current = true; return; }
+    running.current = true;
     setState('saving');
-    commitOps(ops).then(() => setState((s) => (s === 'saving' ? 'synced' : s))).catch(reportError);
-  }, [gigs, ready]);
+    try {
+      do {
+        again.current = false;
+        const m = meta.current;
+        let fileId = m.fileId;
+        let remote = null;
+        if (fileId) {
+          try { remote = await Drive.read(fileId); }
+          catch (e) { if (e.code === 404) { fileId = null; } else throw e; }
+        }
+        if (!fileId) { const files = await Drive.list(); if (files[0]) { fileId = files[0].id; remote = await Drive.read(fileId); } }
+        const merged = mergeSyncData({ ...latest.current, deleted: m.deleted }, remote, m.base);
+        const payload = { app: 'GigFlow', format: 1, appVersion: APP_VERSION, updatedAt: Date.now(), ...merged };
+        if (!fileId) fileId = (await Drive.create(payload)).id;
+        else if (syncComparable(remote) !== syncComparable(payload)) await Drive.update(fileId, payload);
+        if (syncComparable({ ...latest.current, deleted: m.deleted }) !== syncComparable(merged) && !again.current) {
+          applyingRemote.current = true;
+          setGigs(merged.gigs); setVenues(merged.venues); setSettings(merged.settings);
+          prevIds.current = new Set(merged.gigs.map((g) => g.id));
+        }
+        m.fileId = fileId;
+        m.deleted = merged.deleted;
+        m.base = { venues: stableStr(merged.venues), settings: stableStr(normalizeSettings(merged.settings)) };
+        m.dirty = again.current;
+        m.lastSyncAt = Date.now();
+        setLastSyncAt(m.lastSyncAt); setDirty(m.dirty);
+        persist();
+      } while (again.current);
+      setState('synced');
+    } catch (e) {
+      if (e && e.code === 'no-token') setState('needs-auth');
+      else if (e && e.code === 'offline') setState('offline');
+      else {
+        console.error('Drive sync error', e);
+        setState('error');
+        toast(e && e.code === 403 ? 'Google Drive ไม่อนุญาต — ตรวจสอบว่าเปิด Google Drive API แล้ว' : 'ซิงก์กับ Google Drive ไม่สำเร็จ ลองใหม่อีกครั้ง', 'error');
+      }
+    } finally { running.current = false; }
+  }, [cloud, account && account.uid]);
 
+  // ซิงก์อัตโนมัติ: ตอนเปิดแอป (ถ้ามี token), หลังแก้ไข 1.5 วิ, ตอนกลับมาออนไลน์/กลับมาที่แอป, ทุก 5 นาที
+  useEffect(() => { if (cloud && tokenValid()) syncNow(false); }, []);
   useEffect(() => {
-    if (!user || !ready) return;
-    const s = stableStr(venues);
-    if (s === remoteVenues.current) return;
-    remoteVenues.current = s;
-    base.collection('meta').doc('venues')
-      .set({ list: Object.entries(venues).map(([name, v]) => ({ name, ...v })), updatedAt: Date.now() })
-      .catch(reportError);
-  }, [venues, ready]);
+    if (!cloud || !dirty || !tokenValid()) return;
+    const t = setTimeout(() => syncNow(false), 1500);
+    return () => clearTimeout(t);
+  }, [gigs, venues, settings, dirty]);
+  useEffect(() => {
+    if (!cloud) return;
+    const kick = () => { if (tokenValid()) syncNow(false); else setState('needs-auth'); };
+    const onVis = () => { if (document.visibilityState === 'visible') kick(); };
+    window.addEventListener('online', kick);
+    document.addEventListener('visibilitychange', onVis);
+    const iv = setInterval(() => { if (tokenValid()) syncNow(false); }, 5 * 60 * 1000);
+    return () => { window.removeEventListener('online', kick); document.removeEventListener('visibilitychange', onVis); clearInterval(iv); };
+  }, [syncNow]);
 
-  return { ready, state };
+  return { ready: true, state, lastSyncAt, dirty, syncNow, meta };
 }
 
 /* =====================================================================
@@ -952,17 +1183,22 @@ function Toast({ toast }) {
 
 /* ---------- Account / sync UI ---------- */
 const SYNC_UI = {
-  loading: { icon: 'cloud_sync', text: 'กำลังโหลดข้อมูล…', cls: 'text-[#8E8E93]' },
-  saving:  { icon: 'cloud_sync', text: 'กำลังบันทึกขึ้นคลาวด์…', cls: 'text-[#007AFF] dark:text-[#0A84FF]' },
-  synced:  { icon: 'cloud_done', text: 'ซิงก์กับบัญชีแล้ว', cls: 'st-confirmed' },
-  offline: { icon: 'cloud_off', text: 'ออฟไลน์ · จะซิงก์อัตโนมัติเมื่อออนไลน์', cls: 'st-issue' },
-  error:   { icon: 'error', text: 'ซิงก์ไม่สำเร็จ', cls: 'st-cancelled' },
+  'needs-auth': { icon: 'sync', text: 'แตะเพื่อซิงก์กับ Google Drive', cls: 'text-[#007AFF] dark:text-[#0A84FF]' },
+  saving:  { icon: 'cloud_sync', text: 'กำลังซิงก์กับ Google Drive…', cls: 'text-[#007AFF] dark:text-[#0A84FF]' },
+  synced:  { icon: 'cloud_done', text: 'ซิงก์กับ Google Drive แล้ว', cls: 'st-confirmed' },
+  offline: { icon: 'cloud_off', text: 'ออฟไลน์ · จะซิงก์เมื่อออนไลน์', cls: 'st-issue' },
+  error:   { icon: 'error', text: 'ซิงก์ไม่สำเร็จ · แตะเพื่อลองใหม่', cls: 'st-cancelled' },
   local:   { icon: 'smartphone', text: 'โหมดเครื่องเดียว (ไม่ได้ล็อกอิน)', cls: 'text-[#8E8E93]' },
 };
-function SyncBadge({ state }) {
+/** ป้ายสถานะซิงก์ — แตะได้เพื่อซิงก์ทันที (การแตะทำให้ Google ยืนยันบัญชีได้ถ้าจำเป็น) */
+function SyncBadge({ state, onClick, dirty }) {
   const s = SYNC_UI[state] || SYNC_UI.local;
-  return <span className={`inline-flex items-center gap-1 text-[12px] font-semibold ${s.cls}`}><Icon name={s.icon} size={15} fill={state === 'synced'} />{s.text}</span>;
+  const text = state === 'needs-auth' && dirty ? 'มีการแก้ไขรอซิงก์ · แตะเพื่อซิงก์' : s.text;
+  const inner = <><Icon name={s.icon} size={15} fill={state === 'synced'} className={state === 'saving' ? 'animate-spin' : ''} />{text}</>;
+  if (!onClick || state === 'local' || state === 'saving') return <span className={`inline-flex items-center gap-1 text-[12px] font-semibold ${s.cls}`}>{inner}</span>;
+  return <button onClick={onClick} className={`inline-flex items-center gap-1 text-[12px] font-semibold ${s.cls} active:opacity-60`}>{inner}</button>;
 }
+const fmtAgo = (ts) => { if (!ts) return 'ยังไม่เคยซิงก์'; const m = Math.round((Date.now() - ts) / 60000); if (m < 1) return 'ซิงก์ล่าสุดเมื่อสักครู่'; if (m < 60) return `ซิงก์ล่าสุด ${m} นาทีที่แล้ว`; const h = Math.round(m / 60); if (h < 24) return `ซิงก์ล่าสุด ${h} ชม.ที่แล้ว`; return `ซิงก์ล่าสุด ${Math.round(h / 24)} วันที่แล้ว`; };
 function Avatar({ user, size = 32 }) {
   const [broken, setBroken] = useState(false);
   const initial = (user?.displayName || user?.email || '?').trim().charAt(0).toUpperCase();
@@ -989,17 +1225,23 @@ function Splash({ text = 'กำลังโหลด…' }) {
   );
 }
 
-function LoginScreen({ error, setError }) {
+function LoginScreen({ error, setError, onSignedIn }) {
   const [busy, setBusy] = useState(false);
   const go = async () => {
-    setBusy(true); setError(null);
-    try { await signInWithGoogle(); } catch (e) { setError(authErrorText(e)); }
+    setError(null);
+    const tokenReq = requestGoogleToken({ prompt: 'select_account' });   // ต้องเรียกทันทีตอนแตะ (ป๊อปอัป)
+    setBusy(true);
+    try {
+      await tokenReq;
+      const profile = await fetchGoogleProfile();
+      onSignedIn(profile);
+    } catch (e) { const t = authErrorText(e); if (t) setError(t); clearToken(); }
     setBusy(false);
   };
   const features = [
-    { i: 'lock', c: '#5856D6', t: 'ข้อมูลของใครของมัน', d: 'คิวงานและรายได้ผูกกับบัญชี Google ของคุณ คนอื่นมองไม่เห็น' },
-    { i: 'devices', c: '#34C759', t: 'ซิงก์ทุกเครื่อง', d: 'เปิดบน iPhone, iPad หรือคอมพิวเตอร์ ข้อมูลตรงกันอัตโนมัติ' },
-    { i: 'cloud_off', c: '#FF9500', t: 'ใช้ได้แม้ไม่มีเน็ต', d: 'บันทึกในเครื่องก่อน แล้วซิงก์ให้เมื่อกลับมาออนไลน์' },
+    { i: 'lock', c: '#5856D6', t: 'ข้อมูลของใครของมัน', d: 'เก็บใน Google Drive ของคุณเอง (โฟลเดอร์ซ่อนของแอป) คนอื่นมองไม่เห็น ไม่มีฐานข้อมูลกลาง' },
+    { i: 'devices', c: '#34C759', t: 'ใช้ได้หลายเครื่อง', d: 'ล็อกอินบัญชีเดียวกันบน iPhone, iPad หรือคอมพิวเตอร์ ข้อมูลซิงก์ผ่าน Drive' },
+    { i: 'cloud_off', c: '#FF9500', t: 'ใช้ได้แม้ไม่มีเน็ต', d: 'บันทึกในเครื่องก่อน แล้วซิงก์ขึ้น Drive เมื่อออนไลน์' },
   ];
   return (
     <div className="min-h-screen max-w-md mx-auto flex flex-col px-6 safe-top sheet-pad">
@@ -1023,7 +1265,7 @@ function LoginScreen({ error, setError }) {
           {busy ? <Icon name="progress_activity" className="animate-spin" /> : <GoogleG size={22} />}
           {busy ? 'กำลังเข้าสู่ระบบ…' : 'ดำเนินการต่อด้วย Google'}
         </button>
-        <p className="text-[12px] text-[#8E8E93] text-center mt-3 leading-relaxed">เราใช้แค่ชื่อ อีเมล และรูปโปรไฟล์เพื่อแยกข้อมูลของคุณ<br />ไม่มีการเข้าถึงอีเมล ไดรฟ์ หรือปฏิทินของคุณ</p>
+        <p className="text-[12px] text-[#8E8E93] text-center mt-3 leading-relaxed">ขอสิทธิ์แค่ชื่อ อีเมล รูปโปรไฟล์ และโฟลเดอร์ข้อมูลของ GigFlow ใน Drive<br />แอปมองไม่เห็นไฟล์อื่นใน Google Drive, อีเมล หรือปฏิทินของคุณ</p>
       </div>
     </div>
   );
@@ -1239,8 +1481,8 @@ function IssueAlerts({ gigs, now, onResolve, onEdit }) {
       <div className="px-4 pt-3.5 pb-2 flex items-center gap-2.5">
         <span className="w-9 h-9 rounded-[10px] bg-[#FF9500] text-white flex items-center justify-center shrink-0"><Icon name="notification_important" fill size={22} /></span>
         <div className="min-w-0">
-          <div className="text-[16px] font-bold">ต้องเช็คปัญหา {list.length} งาน</div>
-          <div className="text-[12.5px] text-[#8E8E93]">ใกล้ถึงวันงานแล้ว — เช็คอีกครั้งว่าปัญหาจบหรือยัง</div>
+          <div className="text-[16px] font-bold">ต้องตามงาน {list.length} งาน</div>
+          <div className="text-[12.5px] text-[#8E8E93]">ใกล้ถึงวันงานแล้ว — ยังมีงานที่รอคอนเฟิร์มหรือติดปัญหาอยู่</div>
         </div>
       </div>
       {list.map((g) => (
@@ -1251,13 +1493,13 @@ function IssueAlerts({ gigs, now, onResolve, onEdit }) {
               <span className="text-[15px] font-semibold truncate">{g.venueName}</span>
             </div>
             <div className="text-[12.5px] text-[#8E8E93] tnum mt-0.5">{fmtDateShort(g.date)} · {g.startTime}–{g.endTime}{g.bandName ? ` · ${g.bandName}` : ''}</div>
-            <div className="mt-2 rounded-[10px] px-3 py-2 text-[14px] st-issue flex gap-1.5" style={{ background: 'rgba(255,149,0,0.12)' }}>
-              <Icon name="error" size={17} fill className="shrink-0 mt-[1px]" /><span className="text-black dark:text-white">{g.issueNote || 'ยังไม่ได้ระบุปัญหา — แตะเพื่อกรอก'}</span>
+            <div className={`mt-2 rounded-[10px] px-3 py-2 text-[14px] flex gap-1.5 ${g.status === 'pending' ? 'st-pending' : 'st-issue'}`} style={{ background: g.status === 'pending' ? 'rgba(255,204,0,0.15)' : 'rgba(255,149,0,0.12)' }}>
+              <Icon name={g.status === 'pending' ? 'hourglass_top' : 'error'} size={17} fill className="shrink-0 mt-[1px]" /><span className="text-black dark:text-white">{g.status === 'pending' ? 'ยังรอเจ้าของงานคอนเฟิร์ม — ติดต่อเพื่อยืนยัน' : (g.issueNote || 'ยังไม่ได้ระบุปัญหา — แตะเพื่อกรอก')}</span>
             </div>
           </button>
           <div className="flex gap-2 mt-2.5">
-            <button onClick={() => onResolve(g)} className="flex-1 h-10 rounded-[12px] bg-[#34C759] text-white text-[14px] font-semibold flex items-center justify-center gap-1 active:opacity-85"><Icon name="check_circle" size={18} fill />ปัญหาเคลียร์แล้ว</button>
-            <button onClick={() => openUrl(issueCalendarUrl(g))} aria-label="เพิ่มนัดเช็คปัญหาลง Google Calendar" className="w-10 h-10 rounded-[12px] bg-[#007AFF]/10 text-[#007AFF] dark:text-[#0A84FF] flex items-center justify-center"><Icon name="notification_add" size={20} /></button>
+            <button onClick={() => onResolve(g)} className="flex-1 h-10 rounded-[12px] bg-[#34C759] text-white text-[14px] font-semibold flex items-center justify-center gap-1 active:opacity-85"><Icon name="check_circle" size={18} fill />{g.status === 'pending' ? 'คอนเฟิร์มแล้ว' : 'ปัญหาเคลียร์แล้ว'}</button>
+            <button onClick={() => openUrl(issueCalendarUrl(g))} aria-label="เพิ่มนัดเตือนลง Google Calendar" className="w-10 h-10 rounded-[12px] bg-[#007AFF]/10 text-[#007AFF] dark:text-[#0A84FF] flex items-center justify-center"><Icon name="notification_add" size={20} /></button>
             <button onClick={() => onEdit(g)} aria-label="แก้ไขงาน" className="w-10 h-10 rounded-[12px] bg-[#767680]/[0.12] flex items-center justify-center"><Icon name="edit" size={19} /></button>
           </div>
         </div>
@@ -1279,7 +1521,7 @@ function HomeView({ gigs, now, theme, setTheme, onAdd, onEdit, onDemo, goTab, us
       </>} />
       <div className="px-5 pb-3 flex items-center justify-between gap-2">
         <span className="text-[15px] text-[#8E8E93] truncate">{user?.displayName ? `${greet.replace(/ [^ ]+$/, '')} คุณ${user.displayName.split(' ')[0]} ${greet.split(' ').pop()}` : greet}</span>
-        {user && <SyncBadge state={sync.state} />}
+        {user && <SyncBadge state={sync.state} dirty={sync.dirty} onClick={() => sync.syncNow(true)} />}
       </div>
       <IssueAlerts gigs={gigs} now={now} onResolve={onResolveIssue} onEdit={onEdit} />
       <TodayWidget gigs={gigs} now={now} onEdit={onEdit} onAdd={onAdd} onDemo={onDemo} />
@@ -1538,7 +1780,7 @@ function FinanceView({ gigs, now, theme, setTheme, onEdit, onMarkPaid, onBatch, 
       <div className="text-center text-[12px] text-[#8E8E93] mt-5 px-8 leading-relaxed flex flex-col items-center gap-2">
         <AppLogo size={28} />
         {user
-          ? <>ข้อมูลถูกบันทึกในบัญชีของคุณบน Cloud Firestore อัตโนมัติ<br />เฉพาะเจ้าของบัญชีเท่านั้นที่อ่าน/แก้ไขได้ · ใช้งานออฟไลน์ได้</>
+          ? <>ข้อมูลบันทึกในเครื่องและซิงก์ขึ้น Google Drive ของคุณ (โฟลเดอร์ซ่อนของแอป)<br />เฉพาะบัญชีของคุณเท่านั้นที่เข้าถึงได้ · ใช้งานออฟไลน์ได้</>
           : <>ข้อมูลทั้งหมดถูกบันทึกในเครื่องนี้ (localStorage) อัตโนมัติ<br />ไม่มีการส่งข้อมูลขึ้นเซิร์ฟเวอร์ · ควร Export สำรองไว้เป็นระยะ</>}
       </div>
     </div>
@@ -1557,25 +1799,6 @@ const Row = ({ label, icon, iconBg, children, onClick }) => (
 );
 const GroupLabel = ({ children }) => <div className="px-4 pt-5 pb-1.5 text-[13px] text-[#8E8E93] uppercase tracking-wide">{children}</div>;
 const inputCls = 'bg-transparent outline-none text-right text-[16px] w-full placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E] text-[#3C3C43] dark:text-[#EBEBF5]';
-
-function initForm(g) {
-  return {
-    date: g.date, startTime: g.startTime, endTime: g.endTime, venueName: g.venueName || '', status: g.status || 'pending',
-    bandName: g.bandName || '', baseFee: g.baseFee ? String(g.baseFee) : '', mapsUrl: g.mapsUrl || '',
-    travelMinutes: String(g.travelMinutes ?? 30), notes: g.notes || '', tips: g.tips ? String(g.tips) : '', isPaid: !!g.isPaid,
-    issueNote: g.issueNote || '',
-    gigType: g.gigType || '', members: String(g.members || 1),
-  };
-}
-function formToData(f) {
-  return {
-    date: f.date, startTime: f.startTime, endTime: f.endTime, venueName: f.venueName.trim(), status: f.status,
-    bandName: f.bandName.trim(), baseFee: parseMoney(f.baseFee), mapsUrl: isHttpUrl(f.mapsUrl) ? f.mapsUrl.trim() : '',
-    travelMinutes: parseIntSafe(f.travelMinutes, 30), notes: f.notes, tips: parseMoney(f.tips), isPaid: !!f.isPaid,
-    issueNote: f.status === 'issue' ? f.issueNote.trim() : '',
-    gigType: f.gigType, members: Math.min(Math.max(parseInt(f.members, 10) || 1, 1), 99),
-  };
-}
 
 /* ---------- ทางลัดค่าตัว: สูงสุด 4 ราคา กรอก/แก้เองได้ (จำไว้ในตั้งค่าบัญชี) ---------- */
 function FeePresets({ presets, value, onPick, onChange }) {
@@ -1648,97 +1871,124 @@ function IssueBanners({ issues, multiDates }) {
   );
 }
 
-function GigSheet({ mode, initial, gigs, presets, bands, settings = DEFAULT_SETTINGS, onUpdateSettings = () => {}, onClose, onSave, onDelete, onDeleteVenue, toast }) {
-  const [tab, setTab] = useState(0);
-  const [f, setF] = useState(() => initForm(initial));
-  const [rec, setRec] = useState({ enabled: false, days: [weekdayOf(initial.date)], weeks: 12 });
-  const [focusVenue, setFocusVenue] = useState(false);
-  const [applied, setApplied] = useState(null);
-  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const isEdit = mode === 'edit';
-  const isRetro = !isEdit && isPastDate(f.date);
-  // ฟอร์มสะท้อนการปิดจ๊อบอัตโนมัติ; ถ้าผู้ใช้เปลี่ยนเป็นวันอนาคต/เปิดร้านประจำ ให้คืนค่าที่ระบบตั้งให้ (ถ้าผู้ใช้ยังไม่ได้เลือกสถานะเอง)
-  const autoClosed = useRef(false);
-  useEffect(() => {
-    if (isRetro && !rec.enabled) {
-      setF((p) => {
-        if (p.status === 'pending' || autoClosed.current) { autoClosed.current = true; return { ...p, isPaid: true, status: p.status === 'pending' ? 'confirmed' : p.status }; }
-        return { ...p, isPaid: p.status === 'cancelled' ? p.isPaid : true };
-      });
-    } else if (autoClosed.current) {
-      autoClosed.current = false;
-      setF((p) => ({ ...p, isPaid: false, status: p.status === 'confirmed' ? 'pending' : p.status }));
-    }
-  }, [isRetro, rec.enabled]);
-  const groupSize = initial.recurringGroupId ? gigs.filter((g) => g.recurringGroupId === initial.recurringGroupId).length : 0;
+/* =====================================================================
+   GIG FORM — หน้าเดียว (เพิ่มคิว / แก้ไข / สร้างสำเนา)
+   ===================================================================== */
+const defaultStatusFor = (type) => (type === 'regular' || type === 'rehearsal' ? 'confirmed' : 'pending');
 
-  const baseValid = isValidDate(f.date) && isValidTime(f.startTime) && isValidTime(f.endTime) && f.venueName.trim().length > 0;
-  const issueMissing = f.status === 'issue' && !f.issueNote.trim();      // งานติดปัญหา ต้องระบุว่าติดปัญหาอะไร
-  const typeMissing = !GIG_TYPES[f.gigType];                              // ต้องเลือกประเภทงาน
-  const valid = baseValid && !issueMissing && !typeMissing;
+function GigForm({ mode, initial, gigs, profiles, bands, settings = DEFAULT_SETTINGS, onUpdateSettings = () => {}, onClose, onSave, onDelete, toast }) {
+  const isEdit = mode === 'edit';
+  const isCopy = mode === 'copy';
+  const [f, setF] = useState(() => ({
+    gigType: initial.gigType || '',
+    venueName: initial.venueName || '',
+    mapsUrl: initial.mapsUrl || '',
+    baseFee: initial.baseFee ? String(initial.baseFee) : '',
+    venueNote: (profiles[initial.venueName] && profiles[initial.venueName].note) || '',
+    date: isCopy ? '' : (initial.date || ''),
+    startTime: initial.startTime || '21:00',
+    duration: initial.startTime && initial.endTime ? durBetween(initial.startTime, initial.endTime) : DEFAULT_DURATION,
+    bandName: initial.bandName || '',
+    members: String(initial.members || 1),
+    status: initial.status || (initial.gigType ? defaultStatusFor(initial.gigType) : 'pending'),
+    issueNote: initial.issueNote || '',
+    notes: initial.notes || '',
+    travelMinutes: String(initial.travelMinutes ?? 30),
+  }));
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const [days, setDays] = useState(() => (isValidDate(initial.date) ? [weekdayOf(initial.date)] : []));
+  const [venueOpen, setVenueOpen] = useState(isEdit ? false : !profiles[initial.venueName]);
+  const [venueFocus, setVenueFocus] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const statusTouched = useRef(isEdit || isCopy);
+  const membersManual = useRef(isEdit);
+
+  const type = GIG_TYPES[f.gigType] ? f.gigType : '';
+  const money = type !== 'rehearsal';
+  const endTime = endTimeFrom(f.startTime, f.duration);
+  const overnight = isValidTime(f.startTime) && toMin(endTime) <= toMin(f.startTime);
+  const membersN = Math.min(Math.max(parseInt(f.members, 10) || 1, 1), 99);
+  const regularMulti = !isEdit && type === 'regular';
+  const allDates = regularMulti ? genMonthDates(f.date, days) : (isValidDate(f.date) ? [f.date] : []);
+  const cancelled = isEdit && initial.status === 'cancelled';
+
+  /* ---------- ร้าน: ดรอปดาวน์ ร้านประเภทนี้ก่อน + ร้านอื่น ---------- */
+  const findProfile = (name) => { const n = name.trim().toLowerCase(); const k = Object.keys(profiles).find((x) => x.toLowerCase() === n); return k ? profiles[k] : null; };
+  const applyProfile = (p, t = type) => {
+    const d = p.byType[t];
+    setF((prev) => ({
+      ...prev, venueName: p.name, mapsUrl: p.mapsUrl || prev.mapsUrl, venueNote: p.note || '',
+      ...(d ? {
+        startTime: isValidTime(d.startTime) ? d.startTime : prev.startTime,
+        duration: d.duration || prev.duration,
+        baseFee: d.baseFee ? String(d.baseFee) : prev.baseFee,
+        bandName: d.bandName || prev.bandName,
+        members: d.members ? String(d.members) : prev.members,
+      } : {}),
+    }));
+    if (d && d.members) membersManual.current = true;
+    setVenueOpen(false);
+    if (d) toast(`ใส่ค่าเริ่มต้นของ “${p.name}” แล้ว`, 'auto_awesome');
+  };
+  const q = f.venueName.trim().toLowerCase();
+  const matches = Object.values(profiles).filter((p) => !q || (p.name.toLowerCase().includes(q) && p.name.toLowerCase() !== q));
+  const sameType = matches.filter((p) => type && p.byType[type]).sort((a, b) => b.count - a.count);
+  const otherType = matches.filter((p) => !(type && p.byType[type])).sort((a, b) => b.count - a.count);
   const chooseType = (t) => {
     set('gigType', t);
-    if (!isEdit) setRec((r) => ({ ...r, enabled: t === 'regular', days: r.days.length ? r.days : (isValidDate(f.date) ? [weekdayOf(f.date)] : r.days) }));
+    if (!statusTouched.current) set('status', defaultStatusFor(t));
+    if (!isEdit && t === 'regular' && !days.length && isValidDate(f.date)) setDays([weekdayOf(f.date)]);
+    const p = findProfile(f.venueName);
+    if (p && p.byType[t] && !isEdit) applyProfile(p, t);
   };
-  /* ---------- จำนวนสมาชิก: เติมตามวงที่เคยบันทึกไว้ (จนกว่าผู้ใช้จะแก้เอง) ---------- */
-  const membersManual = useRef(isEdit);
+
+  /* ---------- จำนวนสมาชิก: เติมตามวง ---------- */
   const lastBand = useRef(f.bandName);
   useEffect(() => {
-    if (lastBand.current === f.bandName && isEdit) return;
-    const changed = lastBand.current !== f.bandName;
+    if (lastBand.current === f.bandName) return;
     lastBand.current = f.bandName;
-    if (changed) membersManual.current = false;
-    if (membersManual.current) return;
+    membersManual.current = false;
     const n = settings.bandMembers[f.bandName.trim()];
-    if (n) setF((p) => ({ ...p, members: String(n) }));
+    if (n) set('members', String(n));
   }, [f.bandName]);
-  const membersN = Math.min(Math.max(parseInt(f.members, 10) || 1, 1), 99);
   const setMembers = (n) => { membersManual.current = true; set('members', String(Math.min(Math.max(n, 1), 99))); };
-  const recDates = useMemo(() => (!isEdit && rec.enabled && isValidDate(f.date) ? genRecurringDates(f.date, rec.days, rec.weeks) : []), [isEdit, rec, f.date]);
+  const allBands = [...settings.bands, ...bands.filter((b) => !settings.bands.includes(b))];
 
-  /* ---------- งานก่อน/หลังในคืนเดียวกัน (สำหรับคำนวณเวลาเดินทาง ร้าน → ร้าน) ---------- */
+  /* ---------- เช็คคิวชน (งานใหม่: ชน = บันทึกไม่ได้) ---------- */
+  const draft = { ...f, endTime, travelMinutes: parseIntSafe(f.travelMinutes, 30), status: cancelled ? 'cancelled' : f.status };
   const neighbors = useMemo(() => {
-    if (!baseValid || (!isEdit && rec.enabled)) return { prev: null, next: null };
-    const [s, e] = gigRange(f);
-    let prev = null, next = null;
-    gigs.forEach((g) => {
-      if (g.id === initial.id || !ACTIVE.has(g.status)) return;
-      const [gs, ge] = gigRange(g);
-      if (ge <= s && s - ge < 6 * 60 && (!prev || ge > gigRange(prev)[1])) prev = g;
-      if (gs >= e && gs - e < 6 * 60 && (!next || gs < gigRange(next)[0])) next = g;
-    });
+    if (!isValidDate(f.date) || !isValidTime(f.startTime) || regularMulti) return { prev: null, next: null };
+    const me = { ...draft, id: initial.id || '__new' };
+    const [, e] = gigRange(me);
+    const prev = findPrevGig(me, gigs);
+    let next = null;
+    gigs.forEach((g) => { if (g.id === me.id || !ACTIVE.has(g.status)) return; const [gs] = gigRange(g); if (gs >= e && gs - e < 360 && (!next || gs < gigRange(next)[0])) next = g; });
     return { prev, next };
-  }, [baseValid, f.date, f.startTime, f.endTime, gigs, isEdit, rec.enabled, initial.id]);
+  }, [f.date, f.startTime, f.duration, gigs, regularMulti]);
 
-  /* ---------- เวลาเดินทางอัตโนมัติ (Google Routes API): บ้าน/ร้านก่อนหน้า → ร้านนี้ ---------- */
-  const [travelInfo, setTravelInfo] = useState(null);     // { state: 'loading'|'ok'|'manual'|'error', text }
-  const [nextLeg, setNextLeg] = useState(null);           // { gigId, need, text }
+  const [travelInfo, setTravelInfo] = useState(null);
+  const [nextLeg, setNextLeg] = useState(null);
   const manualTravel = useRef(false);
   const runId = useRef(0);
-  const travelKey = `${f.venueName.trim()}|${f.mapsUrl.trim()}|${f.date}|${neighbors.prev?.id || 'home'}|${settings.homeMapsUrl}|${settings.packMinutes}`;
+  const travelKey = `${f.venueName.trim()}|${f.mapsUrl.trim()}|${f.date}|${neighbors.prev ? neighbors.prev.id : 'home'}|${settings.homeMapsUrl}|${settings.packMinutes}`;
   const initialTravelKey = useRef(isEdit ? travelKey : null);
   const calcTravel = useCallback((force) => {
     const id = ++runId.current;
-    const venue = f.venueName.trim();
-    if (!venue) { setTravelInfo(null); setNextLeg(null); return; }
-    const dest = routeTargetFromUrl(f.mapsUrl);
-    // เวลาไปร้านถัดไปในคืนเดียวกัน (ร้านนี้ → ร้านถัดไป) ใช้กับแถบเตือนสีส้ม
+    if (!f.venueName.trim()) { setTravelInfo(null); setNextLeg(null); return; }
+    const ref = homeLatLng(settings);
+    const dest = routeTargetFromUrl(f.mapsUrl, ref);
     const nx = neighbors.next;
-    const nxDest = nx ? routeTargetFromUrl(nx.mapsUrl) : null;
+    const nxDest = nx ? routeTargetFromUrl(nx.mapsUrl, ref) : null;
     if (dest && nxDest && MAPS_KEY) {
       fetchDriveMinutes(dest, nxDest, gigRange(nx)[0] - 60)
         .then((r) => { if (id === runId.current) setNextLeg({ gigId: nx.id, need: r.minutes + settings.packMinutes, text: `ไป ${nx.venueName} ขับรถ ${r.minutes} นาที + เผื่อเก็บของ ${settings.packMinutes} นาที` }); })
         .catch(() => { if (id === runId.current) setNextLeg(null); });
     } else setNextLeg(null);
-
-    if (!dest) {
-      setTravelInfo({ state: 'manual', text: !f.mapsUrl.trim() ? 'ร้านนี้ยังไม่มีลิงก์ Google Maps — กรอกเวลาเดินทางเอง' : isShortMapsLink(f.mapsUrl) ? 'ลิงก์ร้านเป็นลิงก์สั้น (maps.app.goo.gl) คำนวณอัตโนมัติไม่ได้ — กรอกเวลาเอง' : 'ลิงก์ร้านไม่มีพิกัดหรือชื่อสถานที่ — กรอกเวลาเอง' });
-      return;
-    }
+    if (!dest) { setTravelInfo({ state: 'manual', text: !f.mapsUrl.trim() ? 'ร้านนี้ยังไม่มีโลเคชั่น — ใส่ Plus Code หรือลิงก์ Google Maps เพื่อคำนวณอัตโนมัติ' : `${mapRefStatus(f.mapsUrl, ref).text}` }); return; }
     let origin, from;
     if (neighbors.prev) {
-      origin = routeTargetFromUrl(neighbors.prev.mapsUrl); from = neighbors.prev.venueName;
-      if (!origin) { setTravelInfo({ state: 'manual', text: `ร้านก่อนหน้า (${from}) ไม่มีพิกัดในลิงก์ — กรอกเวลาเอง` }); return; }
+      origin = routeTargetFromUrl(neighbors.prev.mapsUrl, ref); from = neighbors.prev.venueName;
+      if (!origin) { setTravelInfo({ state: 'manual', text: `ร้านก่อนหน้า (${from}) ยังไม่มีโลเคชั่นที่อ่านได้ — กรอกเวลาเอง` }); return; }
     } else {
       origin = homeTarget(settings); from = 'บ้าน';
       if (!origin) { setTravelInfo({ state: 'manual', text: 'ยังไม่ได้ตั้งตำแหน่งบ้าน — ตั้งได้ที่เมนู ☰ › ตั้งค่าบัญชี' }); return; }
@@ -1746,399 +1996,437 @@ function GigSheet({ mode, initial, gigs, presets, bands, settings = DEFAULT_SETT
     if (!MAPS_KEY) { setTravelInfo({ state: 'manual', text: routeErrorText({ code: 'no-key' }) }); return; }
     if (!force && manualTravel.current) return;
     setTravelInfo({ state: 'loading', text: `กำลังคำนวณเวลาเดินทางจาก${from}…` });
-    const startAbs = baseValid ? gigRange(f)[0] : 0;
+    const startAbs = isValidDate(f.date) && isValidTime(f.startTime) ? gigRange({ date: f.date, startTime: f.startTime, endTime })[0] : 0;
     fetchDriveMinutes(origin, dest, startAbs ? startAbs - 60 : 0)
       .then((r) => {
         if (id !== runId.current) return;
         manualTravel.current = false;
         setF((p) => ({ ...p, travelMinutes: String(r.minutes + settings.packMinutes) }));
-        setTravelInfo({ state: 'ok', text: `ขับรถจาก${from} ${r.minutes} นาที (${r.km} กม.${r.traffic ? ' · คิดสภาพจราจร' : ''}) + เผื่อเก็บของ ${settings.packMinutes} นาที`, from });
+        setTravelInfo({ state: 'ok', text: `ขับรถจาก${from} ${r.minutes} นาที (${r.km} กม.${r.traffic ? ' · คิดสภาพจราจร' : ''}) + เผื่อเก็บของ ${settings.packMinutes} นาที` });
       })
       .catch((e) => { if (id === runId.current) setTravelInfo({ state: 'error', text: routeErrorText(e) }); });
-  }, [f.venueName, f.mapsUrl, f.date, f.startTime, f.endTime, neighbors, settings, baseValid]);
+  }, [f.venueName, f.mapsUrl, f.date, f.startTime, endTime, neighbors, settings]);
   useEffect(() => {
-    if (initialTravelKey.current === travelKey) return;          // เปิดแก้ไขงานเดิม: ไม่ทับค่าที่บันทึกไว้ จนกว่าจะเปลี่ยนร้าน/วัน
+    if (initialTravelKey.current === travelKey) return;
     initialTravelKey.current = null;
     manualTravel.current = false;
     const t = setTimeout(() => calcTravel(false), 700);
     return () => clearTimeout(t);
   }, [travelKey]);
 
-  const issues = useMemo(() => {
-    const data = formToData(f);
-    const exclude = new Set(isEdit ? [initial.id] : []);
-    const dates = !isEdit && rec.enabled ? recDates : [f.date];
-    const needAfter = nextLeg ? { [nextLeg.gigId]: nextLeg.need } : {};
-    const res = { conflicts: [], tight: [] };
-    dates.forEach((d) => { const r = findIssues({ ...data, date: d }, gigs, exclude, needAfter); res.conflicts.push(...r.conflicts); res.tight.push(...r.tight); });
-    return res;
-  }, [f, rec, recDates, gigs, isEdit, initial.id, nextLeg]);
+  const exclude = new Set(isEdit ? [initial.id] : []);
+  const perDate = allDates.map((d) => ({ date: d, ...findIssues({ ...draft, date: d }, gigs, exclude, nextLeg ? { [nextLeg.gigId]: nextLeg.need } : {}) }));
+  const clashDates = perDate.filter((x) => x.conflicts.length).map((x) => x.date);
+  const okDates = allDates.filter((d) => !clashDates.includes(d));
+  const issues = { conflicts: perDate.flatMap((x) => x.conflicts), tight: perDate.flatMap((x) => x.tight) };
+  const blockedByClash = !isEdit && allDates.length > 0 && okDates.length === 0;
 
-  const findPreset = (name) => {
-    const n = name.trim().toLowerCase();
-    if (!n) return null;
-    const k = Object.keys(presets).find((x) => x.toLowerCase() === n);
-    return k ? { name: k, ...presets[k] } : null;
+  /* ---------- ตรวจความครบถ้วน ---------- */
+  const missing = [];
+  if (!type) missing.push('ประเภทงาน');
+  if (!f.venueName.trim()) missing.push('ชื่อร้าน');
+  if (!isValidDate(f.date)) missing.push('วันที่เล่น');
+  if (!isValidTime(f.startTime)) missing.push('เวลาเริ่ม');
+  if (!(f.duration > 0)) missing.push('ระยะเวลาเล่น');
+  if (f.status === 'issue' && !f.issueNote.trim()) missing.push('ปัญหาที่ติด');
+  if (regularMulti && !days.length) missing.push('วันประจำ');
+  if (regularMulti && isValidDate(f.date) && days.length && !allDates.length) missing.push('วันประจำที่เหลือในเดือนนี้');
+  const valid = !missing.length && !blockedByClash;
+  const isRetro = !isEdit && isPastDate(f.date);
+
+  const submit = () => {
+    if (missing.length) { toast(`ยังไม่ได้กรอก: ${missing.join(', ')}`, 'error'); return; }
+    if (blockedByClash) { toast('เวลาชนกับงานที่มีอยู่แล้ว — บันทึกไม่ได้', 'error'); return; }
+    const data = {
+      gigType: type, venueName: f.venueName.trim(), mapsUrl: isMapRef(f.mapsUrl) ? f.mapsUrl.trim() : '',
+      baseFee: money ? parseMoney(f.baseFee) : 0, date: f.date, startTime: f.startTime, endTime,
+      bandName: f.bandName.trim(), members: membersN, status: cancelled ? 'cancelled' : f.status,
+      issueNote: f.status === 'issue' ? f.issueNote.trim() : '', notes: f.notes,
+      travelMinutes: parseIntSafe(f.travelMinutes, 30),
+    };
+    onSave({ mode: isEdit ? 'edit' : 'create', original: initial, data, venueNote: f.venueNote.trim(), dates: isEdit ? [f.date] : okDates, skipped: isEdit ? [] : clashDates });
   };
-  const applyPreset = (p) => {
-    setF((prev) => ({
-      ...prev, venueName: p.name,
-      startTime: isValidTime(p.startTime) ? p.startTime : prev.startTime,
-      endTime: isValidTime(p.endTime) ? p.endTime : prev.endTime,
-      baseFee: p.baseFee ? String(p.baseFee) : prev.baseFee,
-      mapsUrl: p.mapsUrl || prev.mapsUrl,
-      travelMinutes: p.travelMinutes !== undefined ? String(p.travelMinutes) : prev.travelMinutes,
-      bandName: prev.bandName || p.bandName || '',
-    }));
-    setApplied(p.name);
-    toast(`ดึงค่าจากโปรไฟล์ “${p.name}” แล้ว`, 'auto_awesome');
-  };
-  const suggestions = useMemo(() => {
-    const q = f.venueName.trim().toLowerCase();
-    return Object.entries(presets)
-      .filter(([k]) => !q || (k.toLowerCase().includes(q) && k.toLowerCase() !== q))
-      .sort((a, b) => (b[1].count || 0) - (a[1].count || 0))
-      .slice(0, 6).map(([name, v]) => ({ name, ...v }));
-  }, [f.venueName, presets]);
 
-  const durationMin = isValidTime(f.startTime) && isValidTime(f.endTime) ? (() => { const [s, e] = gigRange({ date: '2000-01-01', startTime: f.startTime, endTime: f.endTime }); return e - s; })() : 0;
-  const overnight = isValidTime(f.startTime) && isValidTime(f.endTime) && toMin(f.endTime) <= toMin(f.startTime);
-
-  const submit = (overrides = {}) => {
-    const data = { ...formToData(f), ...overrides };
-    if (data.status !== 'issue') data.issueNote = '';
-    if (!baseValid) { setTab(0); toast('กรุณากรอกวันที่ เวลา และชื่อร้านให้ครบ', 'error'); return; }
-    if (!GIG_TYPES[data.gigType]) { setTab(0); toast('กรุณาเลือกประเภทงาน', 'error'); return; }
-    if (data.status === 'issue' && !data.issueNote) { setTab(0); toast('กรุณาระบุว่าติดปัญหาอะไร', 'error'); return; }
-    if (!isEdit && rec.enabled && !rec.days.length) { setTab(0); toast('เลือกวันประจำอย่างน้อย 1 วัน', 'error'); return; }
-    onSave({ mode, original: initial, data, rec: !isEdit && rec.enabled ? { ...rec, dates: recDates } : null });
-  };
-  const allBands = [...settings.bands, ...bands.filter((b) => !settings.bands.includes(b))];
-
-  const tabs = [
-    { l: 'ลงคิวด่วน', i: 'bolt', done: valid, warn: issueMissing },
-    { l: 'ค่าตัว & เดินทาง', i: 'payments', done: parseMoney(f.baseFee) > 0 || !!f.mapsUrl },
-    { l: 'ปิดจ๊อบ & ทิป', i: 'task_alt', done: f.isPaid || parseMoney(f.tips) > 0 },
-  ];
-  const tipPreview = { tips: parseMoney(f.tips), members: membersN };
-  const myTip = tipShare(tipPreview), tipRest = tipRemainder(tipPreview);
-  const total = addMoney(parseMoney(f.baseFee), myTip);
+  const durH = Math.floor(f.duration / 60), durM = f.duration % 60;
+  const selCls = 'h-9 rounded-[9px] bg-[#767680]/[0.12] dark:bg-[#767680]/[0.24] px-2 text-[16px] font-semibold tnum outline-none appearance-none text-center';
+  const title = isEdit ? 'แก้ไขงาน' : isCopy ? 'สร้างสำเนางาน' : 'เพิ่มคิวงาน';
+  const saveLabel = isEdit ? 'บันทึก' : okDates.length > 1 ? `บันทึก ${okDates.length} งาน` : 'บันทึก';
 
   return (
     <Sheet onClose={onClose} full>
-      {/* nav bar */}
       <div className="pt-4 px-2 flex items-center justify-between shrink-0">
         <button onClick={onClose} className="h-10 px-3 text-[17px] text-[#5856D6] dark:text-[#A5A3FF]">ยกเลิก</button>
-        <div className="text-[17px] font-semibold">{isEdit ? 'แก้ไขงาน' : 'เพิ่มคิวงาน'}</div>
-        <button onClick={() => submit()} disabled={!valid} className={`h-10 px-3 text-[17px] font-semibold ${valid ? 'text-[#5856D6] dark:text-[#A5A3FF]' : 'text-[#C7C7CC] dark:text-[#48484A]'}`}>บันทึก</button>
+        <div className="text-[17px] font-semibold">{title}</div>
+        <button onClick={submit} className={`h-10 px-3 text-[17px] font-semibold ${valid ? 'text-[#5856D6] dark:text-[#A5A3FF]' : 'text-[#C7C7CC] dark:text-[#48484A]'}`}>{isEdit ? 'บันทึก' : 'เพิ่ม'}</button>
       </div>
-      {/* stage tabs */}
-      <div className="px-4 pt-2 pb-1 shrink-0">
-        <div className="flex p-[2px] rounded-[10px] bg-[#767680]/[0.12] dark:bg-[#767680]/[0.24]">
-          {tabs.map((t, i) => (
-            <button key={i} onClick={() => setTab(i)} className={`flex-1 h-[38px] rounded-[8px] text-[12.5px] font-semibold flex items-center justify-center gap-1 transition-all ${tab === i ? 'bg-white dark:bg-[#636366] shadow-[0_3px_8px_rgba(0,0,0,0.12)]' : 'text-black/60 dark:text-white/60'}`}>
-              <span className={`w-[18px] h-[18px] rounded-full text-[10px] font-bold flex items-center justify-center ${t.warn ? 'bg-[#FF3B30] text-white' : t.done ? 'bg-[#34C759] text-white' : 'bg-black/10 dark:bg-white/15'}`}>{t.warn ? '!' : t.done ? <Icon name="check" size={13} /> : i + 1}</span>
-              <span className="truncate">{t.l}</span>
+      <IssueBanners issues={isEdit || !regularMulti ? issues : { conflicts: [], tight: issues.tight }} multiDates={regularMulti} />
+      {!isEdit && issues.conflicts.length > 0 && (
+        <div className="px-4 pt-2 text-[13px] st-cancelled font-semibold">
+          {blockedByClash ? 'มีงานในเวลานี้อยู่แล้ว — เปลี่ยนวัน/เวลาก่อนบันทึก' : `จะข้ามวันที่ชน ${clashDates.length} วัน: ${clashDates.map(fmtDateShort).join(', ')}`}
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto no-scrollbar sheet-pad">
+        {/* 1. ประเภทงาน */}
+        <GroupLabel>ประเภทงาน *</GroupLabel>
+        <div className="mx-4 grid grid-cols-4 gap-1.5">
+          {GIG_TYPE_ORDER.map((k) => {
+            const t = GIG_TYPES[k], on = type === k;
+            return (
+              <button key={k} onClick={() => chooseType(k)} aria-pressed={on}
+                className={`min-h-[58px] rounded-[12px] px-1 py-1.5 flex flex-col items-center justify-center gap-0.5 text-[12.5px] font-semibold leading-tight border-2 transition-all ${on ? 'bg-white dark:bg-[#2C2C2E]' : 'bg-white/60 dark:bg-[#2C2C2E]/50 border-transparent text-black/60 dark:text-white/60'}`}
+                style={on ? { borderColor: t.color } : {}}>
+                <Icon name={t.icon} fill={on} size={21} style={{ color: t.color }} />{t.short === 'อีเว้นท์' ? 'อีเว้นท์' : t.short}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* 2. ชื่อร้าน + รายละเอียดร้าน (พับได้) */}
+        <GroupLabel>ร้าน / สถานที่ *</GroupLabel>
+        <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+          <div className="flex items-center gap-3 px-4 min-h-[50px]">
+            <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#5856D6]"><Icon name="storefront" size={18} /></span>
+            <input value={f.venueName} placeholder={type ? `ชื่อร้าน (${GIG_TYPES[type].short})` : 'ชื่อร้าน'} autoComplete="off"
+              onChange={(e) => set('venueName', e.target.value)}
+              onFocus={() => setVenueFocus(true)}
+              onBlur={() => { setVenueFocus(false); const p = findProfile(f.venueName); if (p && !isEdit && p.name !== initial.venueName) applyProfile(p); }}
+              className="flex-1 min-w-0 bg-transparent outline-none text-[16px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+            {f.venueName.trim() && (
+              <button onClick={() => setVenueOpen((o) => !o)} aria-expanded={venueOpen} aria-label="รายละเอียดร้าน" className="shrink-0 h-8 pl-2.5 pr-1.5 rounded-full bg-[#767680]/[0.12] text-[12px] font-semibold text-[#5856D6] dark:text-[#A5A3FF] flex items-center">
+                รายละเอียด<Icon name={venueOpen ? 'expand_less' : 'expand_more'} size={18} />
+              </button>
+            )}
+          </div>
+          {venueFocus && (sameType.length + otherType.length) > 0 && (
+            <div className="border-t border-black/[0.08] dark:border-white/[0.1] max-h-[260px] overflow-y-auto">
+              {[[type ? `ร้าน${GIG_TYPES[type].short}` : 'ร้านที่เคยบันทึก', sameType], ['ร้านอื่น ๆ', otherType]].map(([label, list]) => list.length > 0 && (
+                <div key={label}>
+                  <div className="px-4 pt-2 pb-0.5 text-[11px] font-semibold text-[#8E8E93] uppercase">{label}</div>
+                  {list.slice(0, 8).map((p) => {
+                    const d = type && p.byType[type];
+                    return (
+                      <button key={p.name} onMouseDown={(e) => e.preventDefault()} onClick={() => { applyProfile(p); setVenueFocus(false); document.activeElement && document.activeElement.blur(); }}
+                        className="w-full flex items-center gap-3 px-4 py-2 text-left active:bg-black/5 dark:active:bg-white/5">
+                        <Icon name="history" size={18} className="text-[#8E8E93]" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[15px] font-medium truncate">{p.name}</div>
+                          <div className="text-[12px] text-[#8E8E93] tnum truncate">{d ? `${d.startTime} · ${fmtDurShort(d.duration)}${d.baseFee ? ` · ${fmtMoney(d.baseFee)}` : ''}${d.bandName ? ` · ${d.bandName}` : ''}` : p.mapsUrl ? 'มีโลเคชั่น' : 'ยังไม่มีค่าเริ่มต้นของประเภทนี้'}</div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
+          {venueOpen && f.venueName.trim() && (
+            <div className="border-t border-black/[0.08] dark:border-white/[0.1] anim-fade">
+              <div className="flex items-center gap-3 px-4 min-h-[48px]">
+                <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#34C759]"><Icon name="location_on" size={18} /></span>
+                <input type="text" autoCapitalize="characters" autoCorrect="off" spellCheck={false} value={f.mapsUrl} onChange={(e) => set('mapsUrl', e.target.value)} placeholder="โลเคชั่น: Plus Code หรือลิงก์ Google Maps" className="flex-1 min-w-0 bg-transparent outline-none text-[15px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+                {isMapRef(f.mapsUrl) && <button onClick={() => openUrl(mapsPlaceUrl({ venueName: f.venueName, mapsUrl: f.mapsUrl }))} className="text-[13px] font-semibold text-[#5856D6] dark:text-[#A5A3FF] shrink-0">ดูแมพ</button>}
+              </div>
+              {f.mapsUrl.trim() && (() => { const st = mapRefStatus(f.mapsUrl, homeLatLng(settings)); return <div className={`px-4 pb-2 -mt-1 text-[12px] flex items-start gap-1 ${st.ok ? 'st-confirmed' : 'st-issue'}`}><Icon name={st.ok ? 'check_circle' : 'info'} size={14} fill={st.ok} />{st.text}</div>; })()}
+              {money && (<>
+                <Sep />
+                <Row label="ค่าตัว (ของฉัน)" icon="payments" iconBg="#5856D6">
+                  <input inputMode="decimal" value={f.baseFee} onChange={(e) => set('baseFee', e.target.value.replace(/[^\d.,]/g, ''))} placeholder="0" className={inputCls + ' tnum font-semibold'} />
+                </Row>
+                <div className="pb-2.5 -mt-1">
+                  <FeePresets presets={settings.feePresets} value={f.baseFee} onPick={(v) => set('baseFee', String(v))}
+                    onChange={(arr) => { onUpdateSettings({ feePresets: arr }); toast('บันทึกทางลัดค่าตัวแล้ว', 'bolt'); }} />
+                </div>
+              </>)}
+              <Sep />
+              <div className="flex gap-3 px-4 py-2.5">
+                <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#FF9500]"><Icon name="sticky_note_2" size={18} /></span>
+                <textarea value={f.venueNote} onChange={(e) => set('venueNote', e.target.value)} rows={2} placeholder="โน้ตของร้าน เช่น ที่จอดรถ เบอร์ผู้จัดการ (ใช้กับทุกงานของร้านนี้)" className="flex-1 bg-transparent outline-none text-[15px] resize-none placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+              </div>
+            </div>
+          )}
+        </div>
+        {!venueOpen && f.venueName.trim() && (
+          <button onClick={() => setVenueOpen(true)} className="mx-5 mt-1.5 text-left text-[12.5px] text-[#8E8E93] flex flex-wrap gap-x-2">
+            <span className="flex items-center gap-0.5"><Icon name="location_on" size={14} />{f.mapsUrl.trim() ? (mapRefStatus(f.mapsUrl, homeLatLng(settings)).ok ? 'มีโลเคชั่น' : 'โลเคชั่นอ่านไม่ได้') : 'ยังไม่มีโลเคชั่น'}</span>
+            {money && <span className="tnum">· ค่าตัว {fmtMoney(parseMoney(f.baseFee))}</span>}
+            {f.venueNote.trim() && <span className="truncate max-w-[180px]">· {f.venueNote.trim()}</span>}
+          </button>
+        )}
+
+        {/* 3. วันเวลา */}
+        <GroupLabel>{regularMulti ? 'เริ่มวันที่ · เวลา *' : 'วันที่ · เวลา *'}</GroupLabel>
+        <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+          <Row label="วันที่เล่น" icon="calendar_today" iconBg="#FF3B30"><input type="date" value={f.date} onChange={(e) => { set('date', e.target.value); if (regularMulti && isValidDate(e.target.value) && !days.length) setDays([weekdayOf(e.target.value)]); }} className={inputCls} /></Row>
+          <Sep />
+          <Row label="เวลาเริ่ม" icon="play_arrow" iconBg="#34C759"><input type="time" value={f.startTime} onChange={(e) => set('startTime', e.target.value)} className={inputCls} /></Row>
+          <Sep />
+          <Row label="เล่นนาน" icon="timelapse" iconBg="#FF9500">
+            <div className="flex items-center gap-1.5">
+              <select aria-label="ชั่วโมง" value={durH} onChange={(e) => set('duration', Number(e.target.value) * 60 + durM)} className={selCls}>
+                {Array.from({ length: 13 }, (_, h) => <option key={h} value={h}>{h}</option>)}
+              </select>
+              <span className="text-[14px] text-[#8E8E93]">ชม.</span>
+              <select aria-label="นาที" value={durM} onChange={(e) => set('duration', durH * 60 + Number(e.target.value))} className={selCls}>
+                {Array.from({ length: 12 }, (_, i) => i * 5).map((m) => <option key={m} value={m}>{pad(m)}</option>)}
+              </select>
+              <span className="text-[14px] text-[#8E8E93]">นาที</span>
+            </div>
+          </Row>
+          {isValidTime(f.startTime) && f.duration > 0 && (
+            <div className="px-4 pb-2.5 text-[13px] text-right tnum">
+              เลิก <b>{endTime}</b>{overnight && <span className="text-[#5856D6] dark:text-[#A5A3FF] font-semibold"> (ข้ามคืน → {isValidDate(f.date) ? fmtDateShort(addDays(f.date, 1)) : 'วันถัดไป'})</span>}
+            </div>
+          )}
+        </div>
+        {regularMulti && (
+          <div className="mx-4 mt-2 rounded-[12px] bg-white dark:bg-[#2C2C2E] px-4 py-3 anim-fade">
+            <div className="text-[13px] text-[#8E8E93] mb-2">ประจำทุกวัน</div>
+            <div className="grid grid-cols-7 gap-1.5">
+              {[1, 2, 3, 4, 5, 6, 0].map((d) => {
+                const on = days.includes(d);
+                return <button key={d} onClick={() => setDays((x) => (on ? x.filter((y) => y !== d) : [...x, d]))} aria-pressed={on} className={`h-10 rounded-full text-[14px] font-semibold ${on ? 'bg-[#007AFF] text-white' : 'bg-[#F2F2F7] dark:bg-[#3A3A3C]'}`}>{TH_DAYS_MINI[d]}</button>;
+              })}
+            </div>
+            <div className="mt-2.5 text-[12.5px] text-[#007AFF] dark:text-[#64D2FF] flex items-start gap-1">
+              <Icon name="info" size={15} />
+              {allDates.length ? `สร้าง ${okDates.length} งานถึงสิ้นเดือน (${fmtDateShort(allDates[0])} – ${fmtDateShort(allDates[allDates.length - 1])}) · เดือนหน้าแอปจะถามว่ายังต่อสัญญาอยู่ไหม` : 'เลือกวันที่เริ่มและวันประจำ'}
+            </div>
+          </div>
+        )}
+        {isRetro && (
+          <div className="mx-4 mt-2 rounded-[12px] px-3.5 py-2.5 text-[13px] st-confirmed flex items-start gap-2" style={{ background: 'rgba(52,199,89,0.12)' }}>
+            <Icon name="task_alt" size={18} fill /><span>งานย้อนหลัง — จะบันทึกเป็น <b>ปิดจ๊อบเรียบร้อย</b> อัตโนมัติ{regularMulti ? ' เฉพาะวันที่ผ่านมาแล้ว' : ''}</span>
+          </div>
+        )}
+
+        {/* 4. วง + สมาชิก */}
+        <GroupLabel>ชื่อวง · จำนวนสมาชิก</GroupLabel>
+        <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+          <div className="flex items-center gap-3 px-4 min-h-[50px]">
+            <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#FF2D55]"><Icon name="groups" size={18} /></span>
+            <input value={f.bandName} onChange={(e) => set('bandName', e.target.value)} placeholder="ชื่อวง" className="flex-1 bg-transparent outline-none text-[16px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+            {f.bandName && <button onClick={() => set('bandName', '')} aria-label="ล้างชื่อวง"><Icon name="cancel" fill size={18} className="text-[#C7C7CC]" /></button>}
+          </div>
+          <Sep />
+          <div className="flex items-center gap-3 px-4 min-h-[50px]">
+            <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#5AC8FA]"><Icon name="group" size={18} /></span>
+            <span className="text-[16px] flex-1">สมาชิก <span className="text-[12px] text-[#8E8E93]">(สำหรับหารทิป)</span></span>
+            <div className="flex items-center rounded-[9px] bg-[#767680]/[0.12] dark:bg-[#767680]/[0.24] h-8">
+              <button onClick={() => setMembers(membersN - 1)} disabled={membersN <= 1} aria-label="ลดจำนวนสมาชิก" className="w-10 h-8 flex items-center justify-center disabled:opacity-30"><Icon name="remove" size={18} /></button>
+              <span className="w-px h-4 bg-black/15 dark:bg-white/20" />
+              <button onClick={() => setMembers(membersN + 1)} aria-label="เพิ่มจำนวนสมาชิก" className="w-10 h-8 flex items-center justify-center"><Icon name="add" size={18} /></button>
+            </div>
+            <span className="w-12 text-right text-[16px] font-semibold tnum">{membersN} คน</span>
+          </div>
+        </div>
+        {allBands.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto no-scrollbar px-4 pt-2">
+            {allBands.map((b) => (
+              <button key={b} onClick={() => set('bandName', f.bandName === b ? '' : b)} className={`h-8 px-3 rounded-full text-[13px] font-semibold whitespace-nowrap flex items-center gap-1 ${f.bandName === b ? 'bg-[#FF2D55] text-white' : 'bg-white dark:bg-[#2C2C2E]'}`}>
+                {settings.bands.includes(b) && <Icon name="star" fill size={14} className={f.bandName === b ? 'text-white' : 'text-[#FF9500]'} />}{b}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* 5. สถานะ (ย่อไว้ แตะเพื่อเลือก) */}
+        <GroupLabel>สถานะงาน</GroupLabel>
+        <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+          {cancelled ? (
+            <div className="px-4 py-3 text-[14px] st-cancelled flex items-center gap-2"><Icon name="cancel" fill size={20} />งานนี้ถูกแคนเซิล — กู้คืนได้ที่หน้ารายละเอียดงาน</div>
+          ) : (<>
+            <button onClick={() => setStatusOpen((o) => !o)} aria-expanded={statusOpen} className="w-full flex items-center gap-3 px-4 min-h-[52px] text-left">
+              <Icon name={STATUS[f.status].icon} fill size={24} style={{ color: STATUS[f.status].color }} />
+              <div className="flex-1 min-w-0"><div className="text-[16px] font-semibold">{STATUS[f.status].label}</div><div className="text-[12px] text-[#8E8E93] truncate">{STATUS_HELP[f.status]}</div></div>
+              <Icon name={statusOpen ? 'expand_less' : 'expand_more'} className="text-[#C7C7CC]" />
+            </button>
+            {statusOpen && ['confirmed', 'pending', 'issue'].map((k) => (
+              <button key={k} onClick={() => { statusTouched.current = true; set('status', k); setStatusOpen(false); }}
+                className={`w-full flex items-start gap-3 px-4 py-2.5 text-left border-t border-black/[0.08] dark:border-white/[0.1] ${f.status === k ? 'bg-black/[0.03] dark:bg-white/[0.05]' : ''}`}>
+                <Icon name={STATUS[k].icon} fill={f.status === k} size={22} style={{ color: STATUS[k].color }} />
+                <div className="flex-1"><div className="text-[15px] font-semibold">{STATUS[k].label}</div><div className="text-[12.5px] text-[#8E8E93] leading-snug">{STATUS_HELP[k]}</div></div>
+                {f.status === k && <Icon name="check" className="text-[#5856D6] dark:text-[#A5A3FF]" />}
+              </button>
+            ))}
+            {f.status === 'issue' && (
+              <div className="border-t border-black/[0.08] dark:border-white/[0.1]">
+                <textarea value={f.issueNote} onChange={(e) => set('issueNote', e.target.value)} rows={2} placeholder="ติดปัญหาอะไร? * เช่น ร้านยังไม่ยืนยันเรื่องเครื่องเสียง"
+                  className={`w-full px-4 py-2.5 bg-transparent outline-none text-[15px] resize-none placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E] ${!f.issueNote.trim() ? 'ring-2 ring-inset ring-[#FF3B30]/50' : ''}`} />
+              </div>
+            )}
+            {FOLLOWUP_DAYS[f.status] && <div className="px-4 pb-2.5 text-[12px] text-[#8E8E93]">แอปจะเตือนให้ตามงานตั้งแต่ {FOLLOWUP_DAYS[f.status]} วันก่อนงาน</div>}
+          </>)}
+        </div>
+
+        {/* หน้าแก้ไข: เพิ่มเติม */}
+        {isEdit && (<>
+          <GroupLabel>เพิ่มเติม</GroupLabel>
+          <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+            <textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} rows={3} placeholder="โน้ตงานนี้ เช่น คีย์เพลง การแต่งกายคืนนี้…" className="w-full px-4 py-3 bg-transparent outline-none text-[15px] resize-none placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+            <Sep />
+            <Row label="เก็บของ + เดินทาง" icon="directions_car" iconBg="#FF9500">
+              <input inputMode="numeric" value={f.travelMinutes} onChange={(e) => { manualTravel.current = true; set('travelMinutes', e.target.value.replace(/[^\d]/g, '')); }} className={inputCls + ' tnum w-16'} />
+              <span className="text-[#8E8E93] ml-1">นาที</span>
+            </Row>
+            <div className="px-4 pb-3 -mt-0.5 flex items-start gap-2">
+              <div className={`flex-1 text-[12.5px] leading-snug ${!travelInfo ? 'text-[#8E8E93]' : travelInfo.state === 'ok' ? 'st-confirmed' : travelInfo.state === 'loading' ? 'text-[#8E8E93]' : 'st-issue'}`}>{travelInfo ? travelInfo.text : `คำนวณจาก${neighbors.prev ? ` ${neighbors.prev.venueName} (งานก่อนหน้า)` : 'บ้าน'} · เผื่อเก็บของ ${settings.packMinutes} นาที`}</div>
+              {f.venueName.trim() && <button onClick={() => calcTravel(true)} className="shrink-0 h-7 px-2.5 rounded-full bg-[#FF9500]/15 st-issue text-[12px] font-semibold flex items-center gap-1"><Icon name="refresh" size={14} />คำนวณใหม่</button>}
+            </div>
+          </div>
+          <div className="mx-4 mt-5 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+            <button onClick={() => onDelete(initial)} className="w-full h-[50px] text-[16px] text-[#FF3B30] flex items-center justify-center gap-1.5"><Icon name="delete" size={20} />ลบงาน</button>
+          </div>
+        </>)}
+
+        <div className="px-4 pt-6">
+          {!valid && missing.length > 0 && <div className="text-[12.5px] text-[#8E8E93] text-center mb-2">ยังไม่ได้กรอก: {missing.join(', ')}</div>}
+          <button onClick={submit} className={`w-full h-[52px] rounded-[14px] text-[17px] font-semibold text-white ${valid ? 'bg-[#5856D6] active:opacity-85' : 'bg-[#5856D6]/40'}`}>{saveLabel}</button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/* =====================================================================
+   GIG DETAIL — แตะการ์ดงานแล้วเปิดหน้านี้ (ดูอย่างเดียว)
+   ===================================================================== */
+function DetailRow({ icon, color, label, children }) {
+  return (
+    <div className="flex items-start gap-3 px-4 py-2.5">
+      <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0" style={{ background: color }}><Icon name={icon} size={18} /></span>
+      <div className="flex-1 min-w-0"><div className="text-[12px] text-[#8E8E93]">{label}</div><div className="text-[15px] break-words">{children}</div></div>
+    </div>
+  );
+}
+function GigDetail({ gig, profile, now, onClose, onEdit, onCopy, onCloseJob, onCancel, onRestore, onResolve }) {
+  const st = STATUS[gig.status];
+  const t = GIG_TYPES[gig.gigType];
+  const cancelled = gig.status === 'cancelled';
+  const [s] = gigRange(gig);
+  const started = now >= s;
+  const money = isPaidWork(gig);
+  const dur = durBetween(gig.startTime, gig.endTime);
+  return (
+    <Sheet onClose={onClose} full>
+      <div className="pt-4 px-2 flex items-center justify-between shrink-0">
+        <button onClick={onClose} className="h-10 px-3 text-[17px] text-[#5856D6] dark:text-[#A5A3FF] flex items-center"><Icon name="chevron_left" size={24} />ปิด</button>
+        <div className="flex items-center">
+          <button onClick={onCopy} className="h-10 px-3 text-[16px] text-[#5856D6] dark:text-[#A5A3FF] flex items-center gap-1"><Icon name="content_copy" size={18} />สร้างสำเนา</button>
+          {!cancelled && <button onClick={onEdit} className="h-10 px-3 text-[17px] font-semibold text-[#5856D6] dark:text-[#A5A3FF]">แก้ไข</button>}
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto no-scrollbar sheet-pad">
+        <div className="px-5 pt-2 pb-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            {t && <span className="text-[12px] font-bold px-2 py-[2px] rounded-full" style={{ color: t.color, background: t.color + '1F' }}>{t.label}</span>}
+            <StatusBadge status={gig.status} />
+            {gig.recurringGroupId && <span className="text-[12px] text-[#8E8E93] flex items-center gap-0.5"><Icon name="repeat" size={14} />งานประจำ</span>}
+            {gig.jobClosed && !cancelled && <span className="text-[12px] font-semibold st-confirmed flex items-center gap-0.5"><Icon name="task_alt" size={14} fill />ปิดจ๊อบแล้ว</span>}
+          </div>
+          <h2 className={`text-[28px] font-bold tracking-tight leading-tight mt-2 ${cancelled ? 'line-through text-[#8E8E93]' : ''}`}>{gig.venueName}</h2>
+          <div className="text-[15px] text-[#8E8E93] mt-0.5">{fmtDateLong(gig.date)}</div>
+          <div className="text-[20px] font-semibold tnum mt-1">{gig.startTime} – {gig.endTime} <span className="text-[14px] font-normal text-[#8E8E93]">({fmtDurShort(dur)}{isOvernight(gig) ? ' · ข้ามคืน' : ''})</span></div>
+        </div>
+
+        {gig.status === 'issue' && (
+          <div className="mx-4 mb-3 rounded-[12px] px-3.5 py-3 text-[14px] flex gap-2" style={{ background: 'rgba(255,149,0,0.12)' }}>
+            <Icon name="error" fill size={20} className="st-issue shrink-0" />
+            <div className="flex-1"><div className="font-semibold st-issue">ติดปัญหา</div><div>{gig.issueNote || '-'}</div></div>
+            <button onClick={() => onResolve(gig)} className="self-center h-8 px-3 rounded-full bg-[#34C759] text-white text-[13px] font-semibold shrink-0">เคลียร์แล้ว</button>
+          </div>
+        )}
+        {gig.status === 'pending' && !cancelled && (
+          <div className="mx-4 mb-3 rounded-[12px] px-3.5 py-3 text-[14px] flex gap-2 items-center" style={{ background: 'rgba(255,204,0,0.15)' }}>
+            <Icon name="hourglass_top" fill size={20} className="st-pending shrink-0" />
+            <div className="flex-1">รอเจ้าของงานคอนเฟิร์ม</div>
+            <button onClick={() => onResolve(gig)} className="h-8 px-3 rounded-full bg-[#34C759] text-white text-[13px] font-semibold shrink-0">คอนเฟิร์มแล้ว</button>
+          </div>
+        )}
+
+        <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden divide-y divide-black/[0.06] dark:divide-white/[0.08]">
+          {(gig.bandName || gig.members > 1) && <DetailRow icon="groups" color="#FF2D55" label="วง · สมาชิก">{gig.bandName || '-'} · {gig.members} คน</DetailRow>}
+          {money && <DetailRow icon="payments" color="#5856D6" label="ค่าตัว (ของฉัน)"><span className="tnum font-semibold">{fmtMoney(gig.baseFee)}</span></DetailRow>}
+          <DetailRow icon="location_on" color="#34C759" label="โลเคชั่น">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span>{gig.mapsUrl ? placeQuery(gig) : 'ยังไม่มีโลเคชั่น'}</span>
+              <button onClick={() => openUrl(mapsPlaceUrl(gig))} className="text-[13px] font-semibold text-[#007AFF] dark:text-[#0A84FF] flex items-center gap-0.5"><Icon name="near_me" size={15} />นำทาง</button>
+            </div>
+          </DetailRow>
+          {gig.travelMinutes > 0 && <DetailRow icon="directions_car" color="#FF9500" label="เก็บของ + เดินทาง">{gig.travelMinutes} นาที · ออกก่อน {absToTime(s - gig.travelMinutes)}</DetailRow>}
+          {profile && profile.note && <DetailRow icon="sticky_note_2" color="#FF9500" label="โน้ตของร้าน"><span className="whitespace-pre-wrap">{profile.note}</span></DetailRow>}
+          {gig.notes && <DetailRow icon="edit_note" color="#8E8E93" label="โน้ตงานนี้"><span className="whitespace-pre-wrap">{gig.notes}</span></DetailRow>}
+          <button onClick={() => openUrl(calendarUrl(gig))} className="w-full flex items-center gap-3 px-4 py-2.5 text-left text-[15px] text-[#007AFF] dark:text-[#0A84FF]"><span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#007AFF]"><Icon name="event" size={18} /></span>เพิ่มลง Google Calendar</button>
+        </div>
+
+        {money && gig.jobClosed && !cancelled && (
+          <div className="mx-4 mt-3 rounded-[12px] bg-white dark:bg-[#2C2C2E] px-4 py-3 text-[14px] tnum">
+            <div className="flex justify-between"><span className="text-[#8E8E93]">ทิปรวม ÷ {gig.members} คน</span><span>{fmtMoney(gig.tips)} → คนละ {fmtMoney(tipShare(gig))}</span></div>
+            <div className="flex justify-between mt-1 font-semibold"><span>ได้รับต่อคน</span><span>{fmtMoney(myIncome(gig))}</span></div>
+            <div className={`mt-1 text-[13px] ${gig.isPaid ? 'st-confirmed' : 'st-issue'}`}>{gig.isPaid ? 'ได้รับค่าตัวแล้ว' : 'ยังไม่ได้รับค่าตัว'}</div>
+          </div>
+        )}
+
+        <div className="px-4 pt-5 space-y-2.5">
+          {money && !cancelled && (
+            <button onClick={() => started && onCloseJob(gig)} disabled={!started}
+              className={`w-full h-[52px] rounded-[14px] text-[17px] font-semibold flex items-center justify-center gap-2 ${started ? 'bg-[#34C759] text-white active:opacity-85' : 'bg-[#767680]/[0.15] text-[#8E8E93]'}`}>
+              <Icon name="task_alt" size={22} fill={started} />{gig.jobClosed ? 'แก้ไขปิดจ๊อบ & ทิป' : 'ปิดจ๊อบ & ทิป'}
+            </button>
+          )}
+          {money && !cancelled && !started && <div className="text-[12px] text-center text-[#8E8E93] -mt-1">กดได้ตั้งแต่เวลาเริ่มงาน ({fmtDateShort(gig.date)} {gig.startTime})</div>}
+          {cancelled
+            ? <button onClick={() => onRestore(gig)} className="w-full h-[50px] rounded-[14px] bg-white dark:bg-[#2C2C2E] text-[16px] font-semibold text-[#007AFF] dark:text-[#0A84FF] flex items-center justify-center gap-1.5"><Icon name="restore" size={20} />กู้คืนงาน</button>
+            : <button onClick={() => onCancel(gig)} className="w-full h-[50px] rounded-[14px] bg-white dark:bg-[#2C2C2E] text-[16px] font-semibold text-[#FF3B30] flex items-center justify-center gap-1.5"><Icon name="event_busy" size={20} />แคนเซิลงานนี้</button>}
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/* =====================================================================
+   CLOSE JOB & TIPS — ทิปรวม (ไม่บังคับ) · เงินต่อคน · ได้รับค่าตัวแล้วหรือยัง
+   ===================================================================== */
+function CloseJobSheet({ gig, onClose, onSave }) {
+  const [tips, setTips] = useState(gig.tips ? String(gig.tips) : '');
+  const [paid, setPaid] = useState(gig.jobClosed ? gig.isPaid : true);
+  const preview = { ...gig, tips: parseMoney(tips) };
+  const share = tipShare(preview), rest = tipRemainder(preview);
+  return (
+    <Sheet onClose={onClose} z={60}>
+      <div className="pt-4 px-2 flex items-center justify-between shrink-0">
+        <button onClick={onClose} className="h-10 px-3 text-[17px] text-[#5856D6] dark:text-[#A5A3FF]">ยกเลิก</button>
+        <div className="text-[17px] font-semibold">ปิดจ๊อบ & ทิป</div>
+        <button onClick={() => onSave(gig, parseMoney(tips), paid)} className="h-10 px-3 text-[17px] font-semibold text-[#5856D6] dark:text-[#A5A3FF]">บันทึก</button>
+      </div>
+      <div className="overflow-y-auto no-scrollbar sheet-pad">
+        <div className="px-5 pt-1 pb-3 text-[14px] text-[#8E8E93]">{gig.venueName} · {fmtDateShort(gig.date)} {gig.startTime}–{gig.endTime}</div>
+        <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+          <Row label="ทิปรวมทั้งวง" icon="volunteer_activism" iconBg="#34C759">
+            <input autoFocus inputMode="decimal" value={tips} onChange={(e) => setTips(e.target.value.replace(/[^\d.,]/g, ''))} placeholder="0 (ไม่บังคับ)" className={inputCls + ' tnum font-semibold'} />
+          </Row>
+        </div>
+        <div className="flex gap-2 px-4 pt-2">
+          {[100, 200, 500, 1000].map((v) => <button key={v} onClick={() => setTips(String(addMoney(parseMoney(tips), v)))} className="flex-1 h-8 rounded-full text-[13px] font-semibold tnum bg-white dark:bg-[#2C2C2E]">+{v}</button>)}
+          <button onClick={() => setTips('')} className="h-8 px-3 rounded-full text-[13px] font-semibold bg-white dark:bg-[#2C2C2E] text-[#8E8E93]">ล้าง</button>
+        </div>
+        <div className="mx-4 mt-4 rounded-[16px] p-4 text-white tnum" style={{ background: 'linear-gradient(145deg,#312E81,#1E1B4B)' }}>
+          <div className="flex justify-between text-[14px] text-white/75"><span>ค่าตัว (ต่อคน)</span><span>{fmtMoney(gig.baseFee)}</span></div>
+          <div className="flex justify-between text-[14px] text-white/75 mt-1"><span>ทิปต่อคน ({fmtMoney(parseMoney(tips))} ÷ {gig.members})</span><span>{fmtMoney(share)}</span></div>
+          {rest > 0 && <div className="text-[12px] text-[#FFD60A] text-right mt-0.5">เศษ {fmtMoney(rest)} (หารไม่ลงตัว)</div>}
+          <div className="h-px bg-white/15 my-2.5" />
+          <div className="flex justify-between items-end"><span className="text-[14px] font-semibold">แต่ละคนได้รับ</span><span className="text-[28px] font-bold">{fmtMoney(addMoney(gig.baseFee, share))}</span></div>
+        </div>
+        <div className="mx-4 mt-4 grid grid-cols-2 gap-2">
+          {[[true, 'ได้รับค่าตัวแล้ว', 'paid', '#34C759'], [false, 'ยังไม่ได้รับ', 'pending_actions', '#FF9500']].map(([v, label, icon, c]) => (
+            <button key={label} onClick={() => setPaid(v)} aria-pressed={paid === v}
+              className={`h-[54px] rounded-[14px] border-2 text-[15px] font-semibold flex items-center justify-center gap-1.5 ${paid === v ? 'bg-white dark:bg-[#2C2C2E]' : 'bg-white/60 dark:bg-[#2C2C2E]/50 border-transparent text-black/60 dark:text-white/60'}`}
+              style={paid === v ? { borderColor: c } : {}}>
+              <Icon name={icon} fill={paid === v} size={20} style={{ color: c }} />{label}
             </button>
           ))}
         </div>
-      </div>
-      <IssueBanners issues={issues} multiDates={!isEdit && rec.enabled} />
-
-      <div className="flex-1 overflow-y-auto no-scrollbar sheet-pad">
-        {tab === 0 && (
-          <div className="anim-fade">
-            <GroupLabel>ประเภทงาน *</GroupLabel>
-            <div className="mx-4 grid grid-cols-3 gap-2">
-              {GIG_TYPE_ORDER.map((k) => {
-                const t = GIG_TYPES[k], on = f.gigType === k;
-                return (
-                  <button key={k} onClick={() => chooseType(k)} aria-pressed={on}
-                    className={`min-h-[64px] rounded-[12px] px-2 py-2 flex flex-col items-center justify-center gap-1 text-[13px] font-semibold leading-tight text-center border-2 transition-all ${on ? 'bg-white dark:bg-[#2C2C2E]' : 'bg-white/60 dark:bg-[#2C2C2E]/50 border-transparent text-black/60 dark:text-white/60'}`}
-                    style={on ? { borderColor: t.color } : {}}>
-                    <Icon name={t.icon} fill={on} size={22} style={{ color: t.color }} />{t.label}
-                  </button>
-                );
-              })}
-            </div>
-            {typeMissing && <div className="px-5 pt-1.5 text-[12px] st-issue">เลือกประเภทงานก่อนบันทึก</div>}
-
-            <GroupLabel>วันเวลา *</GroupLabel>
-            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
-              <Row label="วันที่เล่น" icon="calendar_today" iconBg="#FF3B30"><input type="date" value={f.date} onChange={(e) => set('date', e.target.value)} className={inputCls} /></Row>
-              <Sep />
-              <Row label="เวลาเริ่ม" icon="play_arrow" iconBg="#34C759"><input type="time" value={f.startTime} onChange={(e) => set('startTime', e.target.value)} className={inputCls} /></Row>
-              <Sep />
-              <Row label="เวลาเลิก" icon="stop" iconBg="#FF9500"><input type="time" value={f.endTime} onChange={(e) => set('endTime', e.target.value)} className={inputCls} /></Row>
-              {durationMin > 0 && (
-                <div className="px-4 pb-2.5 pt-0.5 text-[12.5px] text-[#8E8E93] flex items-center gap-1 justify-end">
-                  {overnight && <span className="font-semibold text-[#5856D6] dark:text-[#A5A3FF] flex items-center gap-0.5"><Icon name="bedtime" size={14} />ข้ามเที่ยงคืน → จบ {isValidDate(f.date) ? fmtDateShort(addDays(f.date, 1)) : 'วันถัดไป'} ·</span>}
-                  เล่น {fmtDur(durationMin)}
-                </div>
-              )}
-            </div>
-            {isRetro && (
-              <div className="mx-4 mt-2 rounded-[12px] bg-[#34C759]/12 px-3.5 py-2.5 text-[13px] st-confirmed flex items-start gap-2 anim-fade" style={{ background: 'rgba(52,199,89,0.12)' }}>
-                <Icon name="task_alt" size={18} fill />
-                <span>งานย้อนหลัง — จะบันทึกเป็น <b>ปิดจ๊อบเรียบร้อย</b> (คอนเฟิร์ม + รับเงินแล้ว) อัตโนมัติ{rec.enabled ? ' เฉพาะวันที่ผ่านมาแล้วในชุดนี้' : ''}</span>
-              </div>
-            )}
-
-            <GroupLabel>ร้าน / สถานที่ *</GroupLabel>
-            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
-              <div className="flex items-center gap-3 px-4 min-h-[50px]">
-                <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#5856D6]"><Icon name="storefront" size={18} /></span>
-                <input value={f.venueName} placeholder="พิมพ์ชื่อร้าน…" autoComplete="off"
-                  onChange={(e) => { set('venueName', e.target.value); setApplied(null); }}
-                  onFocus={() => setFocusVenue(true)}
-                  onBlur={() => { setFocusVenue(false); const p = findPreset(f.venueName); if (p && applied !== p.name && !isEdit) applyPreset(p); }}
-                  className="flex-1 bg-transparent outline-none text-[16px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
-                {applied && <span className="text-[11px] font-semibold st-confirmed flex items-center gap-0.5 shrink-0"><Icon name="auto_awesome" size={14} fill />ใช้โปรไฟล์ร้าน</span>}
-              </div>
-              {focusVenue && suggestions.length > 0 && (
-                <div className="border-t border-black/[0.08] dark:border-white/[0.1]">
-                  <div className="px-4 pt-2 text-[11px] font-semibold text-[#8E8E93] uppercase">ร้านที่เคยบันทึก (Venue Presets)</div>
-                  {suggestions.map((s) => (
-                    <div key={s.name} className="flex items-center pr-2 active:bg-black/5 dark:active:bg-white/5">
-                      <button onMouseDown={(e) => e.preventDefault()} onClick={() => { applyPreset(s); setFocusVenue(false); document.activeElement?.blur(); }}
-                        className="flex-1 min-w-0 flex items-center gap-3 pl-4 py-2.5 text-left">
-                        <Icon name="history" size={18} className="text-[#8E8E93]" />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-[15px] font-medium truncate">{s.name}</div>
-                          <div className="text-[12px] text-[#8E8E93] tnum truncate">{s.startTime}–{s.endTime}{s.baseFee ? ` · ${fmtMoney(s.baseFee)}` : ''}{s.travelMinutes !== undefined ? ` · เดินทาง ${s.travelMinutes} นาที` : ''}</div>
-                        </div>
-                      </button>
-                      <button aria-label={`ลบร้าน ${s.name} ออกจากรายการ`} onMouseDown={(e) => e.preventDefault()} onClick={() => onDeleteVenue(s.name)}
-                        className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-[#C7C7CC] hover:text-[#FF3B30] active:text-[#FF3B30] active:bg-[#FF3B30]/10">
-                        <Icon name="close" size={18} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            {travelInfo && (
-              <button onClick={() => setTab(1)} className={`mx-4 mt-2 w-[calc(100%-2rem)] text-left text-[12.5px] flex items-start gap-1.5 ${travelInfo.state === 'ok' ? 'st-confirmed' : travelInfo.state === 'loading' ? 'text-[#8E8E93]' : 'st-issue'}`}>
-                <Icon name={travelInfo.state === 'loading' ? 'progress_activity' : travelInfo.state === 'ok' ? 'directions_car' : 'info'} size={16} className={travelInfo.state === 'loading' ? 'animate-spin' : ''} />
-                <span>{travelInfo.state === 'ok' ? `เก็บของ + เดินทาง ${f.travelMinutes} นาที — ${travelInfo.text}` : travelInfo.text}</span>
-              </button>
-            )}
-
-            <GroupLabel>สถานะงาน</GroupLabel>
-            <div className="mx-4 grid grid-cols-2 gap-2">
-              {STATUS_ORDER.map((k) => {
-                const s = STATUS[k], on = f.status === k;
-                return (
-                  <button key={k} onClick={() => { autoClosed.current = false; set('status', k); }}
-                    className={`h-12 rounded-[12px] px-3 flex items-center gap-2 text-[15px] font-semibold transition-all border-2 ${on ? 'bg-white dark:bg-[#2C2C2E]' : 'bg-white/60 dark:bg-[#2C2C2E]/50 border-transparent text-black/60 dark:text-white/60'}`}
-                    style={on ? { borderColor: s.color } : {}}>
-                    <Icon name={s.icon} fill={on} size={20} style={{ color: s.color }} />
-                    <span className={on ? '' : ''}>{s.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-            {f.status === 'issue' && (
-              <div className="mx-4 mt-2 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden border-2 anim-fade" style={{ borderColor: issueMissing ? '#FF3B30' : '#FF9500' }}>
-                <div className="px-4 pt-3 text-[13px] font-semibold st-issue flex items-center gap-1"><Icon name="error" size={16} fill />ติดปัญหาอะไร? *</div>
-                <textarea value={f.issueNote} onChange={(e) => set('issueNote', e.target.value)} rows={3}
-                  placeholder="เช่น ร้านยังไม่ยืนยันเรื่องเครื่องเสียง, รอโอนมัดจำ, ยังไม่ได้เพลงลิสต์…"
-                  className="w-full px-4 py-2 bg-transparent outline-none text-[16px] resize-none placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
-                {issueMissing && <div className="px-4 pb-2 text-[12px] st-cancelled">ต้องระบุปัญหาก่อนบันทึก</div>}
-                <div className="px-4 pb-3 text-[12px] text-[#8E8E93] leading-snug">
-                  แอปจะเตือนบนหน้าหลักตั้งแต่ 2 วันก่อนงาน ({isValidDate(f.date) ? fmtDateShort(addDays(f.date, -ISSUE_ALERT_DAYS)) : '-'}) — เคลียร์แล้วกด “ปัญหาเคลียร์แล้ว” เพื่อเปลี่ยนเป็นคอนเฟิร์ม
-                </div>
-                {!issueMissing && baseValid && !(rec.enabled && !isEdit) && (
-                  <button onClick={() => openUrl(issueCalendarUrl({ ...initial, ...formToData(f) }))} className="w-full h-11 border-t border-black/[0.08] dark:border-white/[0.1] text-[14px] font-semibold text-[#007AFF] dark:text-[#0A84FF] flex items-center justify-center gap-1.5">
-                    <Icon name="notification_add" size={18} />เพิ่มนัดเช็คปัญหาลง Google Calendar ({fmtDateShort(absToParts(issueReminderAbs(formToData(f))).date)} {absToTime(issueReminderAbs(formToData(f)))} น.)
-                  </button>
-                )}
-              </div>
-            )}
-
-            <GroupLabel>ชื่อวง (ไม่บังคับ)</GroupLabel>
-            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
-              <div className="flex items-center gap-3 px-4 min-h-[50px]">
-                <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#FF2D55]"><Icon name="groups" size={18} /></span>
-                <input value={f.bandName} onChange={(e) => set('bandName', e.target.value)} placeholder="พิมพ์ชื่อวงใหม่ หรือเลือกด้านล่าง" className="flex-1 bg-transparent outline-none text-[16px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
-                {f.bandName && <button onClick={() => set('bandName', '')} aria-label="ล้าง"><Icon name="cancel" fill size={18} className="text-[#C7C7CC]" /></button>}
-              </div>
-            </div>
-            {allBands.length > 0 && (
-              <div className="flex gap-2 overflow-x-auto no-scrollbar px-4 pt-2">
-                {allBands.map((b) => (
-                  <button key={b} onClick={() => set('bandName', f.bandName === b ? '' : b)}
-                    className={`h-8 px-3 rounded-full text-[13px] font-semibold whitespace-nowrap transition-colors flex items-center gap-1 ${f.bandName === b ? 'bg-[#FF2D55] text-white' : 'bg-white dark:bg-[#2C2C2E]'}`}>
-                    {settings.bands.includes(b) && <Icon name="star" fill size={14} className={f.bandName === b ? 'text-white' : 'text-[#FF9500]'} />}{b}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <GroupLabel>จำนวนสมาชิก</GroupLabel>
-            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
-              <div className="flex items-center gap-3 px-4 min-h-[50px]">
-                <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#5AC8FA]"><Icon name="group" size={18} /></span>
-                <span className="text-[16px] flex-1">สมาชิกที่เล่นงานนี้</span>
-                <div className="flex items-center rounded-[9px] bg-[#767680]/[0.12] dark:bg-[#767680]/[0.24] h-8">
-                  <button onClick={() => setMembers(membersN - 1)} disabled={membersN <= 1} aria-label="ลดจำนวนสมาชิก" className="w-10 h-8 flex items-center justify-center disabled:opacity-30"><Icon name="remove" size={18} /></button>
-                  <span className="w-px h-4 bg-black/15 dark:bg-white/20" />
-                  <button onClick={() => setMembers(membersN + 1)} aria-label="เพิ่มจำนวนสมาชิก" className="w-10 h-8 flex items-center justify-center"><Icon name="add" size={18} /></button>
-                </div>
-                <span className="w-12 text-right text-[16px] font-semibold tnum">{membersN} คน</span>
-              </div>
-            </div>
-            <div className="px-5 pt-1.5 text-[12px] text-[#8E8E93]">{f.bandName.trim() ? `จะจำไว้ว่าวง “${f.bandName.trim()}” มี ${membersN} คน` : 'ใช้หารทิปรวมเป็นทิปรายคนในหน้าปิดจ๊อบ'}</div>
-
-            {!isEdit ? (f.gigType === 'regular' && (
-              <>
-                <GroupLabel>งานประจำ — สร้างคิวซ้ำทุกสัปดาห์</GroupLabel>
-                <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
-                  <Row label="ตั้งเป็นงานประจำทุกสัปดาห์" icon="repeat" iconBg="#007AFF">
-                    <Switch checked={rec.enabled} label="ร้านประจำ" onChange={(v) => setRec((r) => ({ ...r, enabled: v, days: v && isValidDate(f.date) && !r.days.length ? [weekdayOf(f.date)] : r.days }))} />
-                  </Row>
-                  {rec.enabled && (
-                    <div className="px-4 pb-4 anim-fade">
-                      <div className="text-[13px] text-[#8E8E93] mb-2">เล่นทุกวัน</div>
-                      <div className="grid grid-cols-7 gap-1.5">
-                        {[1, 2, 3, 4, 5, 6, 0].map((d) => {
-                          const on = rec.days.includes(d);
-                          return (
-                            <button key={d} onClick={() => setRec((r) => ({ ...r, days: on ? r.days.filter((x) => x !== d) : [...r.days, d] }))}
-                              className={`h-10 rounded-full text-[14px] font-semibold transition-colors ${on ? 'bg-[#007AFF] text-white' : 'bg-[#F2F2F7] dark:bg-[#3A3A3C]'}`}>{TH_DAYS_MINI[d]}</button>
-                          );
-                        })}
-                      </div>
-                      <div className="text-[13px] text-[#8E8E93] mt-3 mb-2">สร้างล่วงหน้า</div>
-                      <Segmented value={rec.weeks} onChange={(v) => setRec((r) => ({ ...r, weeks: v }))} options={[{ value: 4, label: '4 สัปดาห์' }, { value: 12, label: '12 สัปดาห์' }, { value: 24, label: '24 สัปดาห์' }]} />
-                      <div className="mt-3 rounded-[10px] bg-[#007AFF]/10 px-3 py-2 text-[13px] text-[#007AFF] dark:text-[#64D2FF] flex items-center gap-1.5">
-                        <Icon name="info" size={16} />
-                        {recDates.length ? `จะสร้าง ${recDates.length} งาน: ${fmtDateShort(recDates[0])} – ${fmtDateShort(recDates[recDates.length - 1])}` : 'ยังไม่มีวันที่ตรงกับวันที่เลือก'}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </>
-            )) : groupSize > 1 && (
-              <div className="mx-4 mt-5 rounded-[12px] bg-[#007AFF]/10 px-3.5 py-3 text-[13px] text-[#007AFF] dark:text-[#64D2FF] flex items-center gap-2">
-                <Icon name="repeat" size={18} />งานนี้อยู่ในชุดร้านประจำ {groupSize} งาน · เมื่อแก้ไขจะถามขอบเขตการเปลี่ยนแปลง
-              </div>
-            )}
-          </div>
-        )}
-
-        {tab === 1 && (
-          <div className="anim-fade">
-            <GroupLabel>ค่าตัว</GroupLabel>
-            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
-              <Row label="ค่าตัว (บาท)" icon="payments" iconBg="#5856D6">
-                <input inputMode="decimal" value={f.baseFee} onChange={(e) => set('baseFee', e.target.value.replace(/[^\d.,]/g, ''))} placeholder="0" className={inputCls + ' tnum font-semibold'} />
-              </Row>
-            </div>
-            <FeePresets presets={settings.feePresets} value={f.baseFee} onPick={(v) => set('baseFee', String(v))}
-              onChange={(arr) => { onUpdateSettings({ feePresets: arr }); toast('บันทึกทางลัดค่าตัวแล้ว', 'bolt'); }} />
-            <div className="px-5 pt-1.5 text-[12px] text-[#8E8E93]">ค่าตัวส่วนของคุณ · ทางลัดตั้งได้สูงสุด 4 ราคา (แก้ได้ที่นี่ หรือเมนู ☰ › ตั้งค่าบัญชี)</div>
-
-            <GroupLabel>การเดินทาง</GroupLabel>
-            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
-              <div className="flex items-center gap-3 px-4 min-h-[50px]">
-                <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#34C759]"><Icon name="map" size={18} /></span>
-                <input type="url" inputMode="url" value={f.mapsUrl} onChange={(e) => set('mapsUrl', e.target.value)} placeholder="วางลิงก์ Google Maps ของร้าน" className="flex-1 min-w-0 bg-transparent outline-none text-[15px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
-                {isHttpUrl(f.mapsUrl) && <button onClick={() => openUrl(f.mapsUrl)} className="text-[13px] font-semibold text-[#5856D6] dark:text-[#A5A3FF] shrink-0">ทดสอบ</button>}
-              </div>
-              {f.mapsUrl && !isHttpUrl(f.mapsUrl) && <div className="px-4 pb-2 text-[12px] st-cancelled">ลิงก์ต้องขึ้นต้นด้วย https://</div>}
-              <Sep />
-              <Row label="เก็บของ + เดินทาง" icon="directions_car" iconBg="#FF9500">
-                <input inputMode="numeric" value={f.travelMinutes} onChange={(e) => { manualTravel.current = true; set('travelMinutes', e.target.value.replace(/[^\d]/g, '')); }} className={inputCls + ' tnum w-16'} />
-                <span className="text-[#8E8E93] ml-1">นาที</span>
-              </Row>
-              <div className="px-4 pb-3 -mt-0.5 flex items-start gap-2">
-                <div className={`flex-1 text-[12.5px] leading-snug flex items-start gap-1.5 ${!travelInfo ? 'text-[#8E8E93]' : travelInfo.state === 'ok' ? 'st-confirmed' : travelInfo.state === 'loading' ? 'text-[#8E8E93]' : 'st-issue'}`}>
-                  <Icon name={travelInfo?.state === 'loading' ? 'progress_activity' : travelInfo?.state === 'ok' ? 'auto_awesome' : 'info'} size={15} className={travelInfo?.state === 'loading' ? 'animate-spin' : ''} />
-                  <span>{travelInfo ? travelInfo.text : `คำนวณอัตโนมัติจาก${neighbors.prev ? ` ${neighbors.prev.venueName} (งานก่อนหน้า)` : 'บ้าน'} เมื่อเลือกร้าน · เผื่อเก็บของ ${settings.packMinutes} นาที`}</span>
-                </div>
-                {f.venueName.trim() && <button onClick={() => calcTravel(true)} className="shrink-0 h-7 px-2.5 rounded-full bg-[#FF9500]/15 st-issue text-[12px] font-semibold flex items-center gap-1"><Icon name="refresh" size={14} />คำนวณใหม่</button>}
-              </div>
-              {nextLeg && <div className="px-4 pb-3 -mt-1 text-[12px] text-[#8E8E93] flex items-start gap-1.5"><Icon name="alt_route" size={15} />{nextLeg.text}</div>}
-            </div>
-            <div className="flex gap-2 px-4 pt-2">
-              {[15, 30, 45, 60, 90].map((v) => (
-                <button key={v} onClick={() => { manualTravel.current = true; set('travelMinutes', String(v)); }} className={`flex-1 h-8 rounded-full text-[13px] font-semibold tnum ${parseIntSafe(f.travelMinutes) === v ? 'bg-[#FF9500] text-white' : 'bg-white dark:bg-[#2C2C2E]'}`}>{v}′</button>
-              ))}
-            </div>
-            <div className="px-5 pt-2 text-[12px] text-[#8E8E93]">ระบบจะจำค่าตัว ลิงก์แผนที่ และเวลาเดินทางไว้ในโปรไฟล์ร้านนี้อัตโนมัติ</div>
-
-            <GroupLabel>โน้ตเพิ่มเติม</GroupLabel>
-            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
-              <textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} rows={5} placeholder="เช่น คีย์เพลง, การแต่งกาย, เบอร์ติดต่อผู้จัดการร้าน…" className="w-full px-4 py-3 bg-transparent outline-none text-[16px] resize-none placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
-            </div>
-          </div>
-        )}
-
-        {tab === 2 && (
-          <div className="anim-fade">
-            <GroupLabel>หลังเล่นเสร็จ</GroupLabel>
-            <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
-              <Row label="ทิปรวมทั้งวง (บาท)" icon="volunteer_activism" iconBg="#34C759">
-                <input inputMode="decimal" value={f.tips} onChange={(e) => set('tips', e.target.value.replace(/[^\d.,]/g, ''))} placeholder="0" className={inputCls + ' tnum font-semibold'} />
-              </Row>
-            </div>
-            <div className="flex gap-2 px-4 pt-2">
-              {[100, 200, 500, 1000].map((v) => (
-                <button key={v} onClick={() => set('tips', String(addMoney(parseMoney(f.tips), v)))} className="flex-1 h-8 rounded-full text-[13px] font-semibold tnum bg-white dark:bg-[#2C2C2E] active:bg-[#34C759] active:text-white">+{v}</button>
-              ))}
-              <button onClick={() => set('tips', '')} className="h-8 px-3 rounded-full text-[13px] font-semibold bg-white dark:bg-[#2C2C2E] text-[#8E8E93]">ล้าง</button>
-            </div>
-            <div className="mx-4 mt-3 rounded-[12px] bg-white dark:bg-[#2C2C2E] px-4 py-3 flex items-center gap-3">
-              <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#5AC8FA]"><Icon name="call_split" size={18} /></span>
-              <div className="flex-1 min-w-0">
-                <div className="text-[14px] text-[#8E8E93] tnum">{fmtMoney(parseMoney(f.tips))} ÷ {membersN} คน</div>
-                <div className="text-[17px] font-bold tnum">ทิปรายคน {fmtMoney(myTip)}</div>
-                {tipRest > 0 && <div className="text-[12px] st-issue tnum">เศษ {fmtMoney(tipRest)} (หารไม่ลงตัว)</div>}
-              </div>
-              <button onClick={() => setTab(0)} className="text-[13px] font-semibold text-[#5856D6] dark:text-[#A5A3FF]">แก้จำนวนคน</button>
-            </div>
-            <div className="mx-4 mt-5 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
-              <Row label={f.isPaid ? 'รับเงินแล้ว' : 'ยังค้างจ่าย'} icon={f.isPaid ? 'paid' : 'pending_actions'} iconBg={f.isPaid ? '#34C759' : '#FF9500'}>
-                {isRetro && !rec.enabled
-                  ? <span className="text-[13px] font-semibold st-confirmed flex items-center gap-1"><Icon name="lock" size={15} />ปิดจ๊อบอัตโนมัติ</span>
-                  : <Switch checked={f.isPaid} onChange={(v) => set('isPaid', v)} label="สถานะการรับเงิน" />}
-              </Row>
-            </div>
-            {isRetro && <div className="px-5 pt-2 text-[12px] text-[#8E8E93]">งานที่วันที่ผ่านมาแล้วจะถูกบันทึกว่ารับเงินแล้วเสมอ (แก้ไขภายหลังได้จากหน้าแก้ไขงาน)</div>}
-            <div className="mx-4 mt-5 rounded-[16px] p-4 text-white" style={{ background: 'linear-gradient(145deg,#312E81,#1E1B4B)' }}>
-              <div className="flex justify-between text-[14px] text-white/75"><span>ค่าตัว (ของฉัน)</span><span className="tnum">{fmtMoney(parseMoney(f.baseFee))}</span></div>
-              <div className="flex justify-between text-[14px] text-white/75 mt-1"><span>ทิปรายคน ({fmtMoney(parseMoney(f.tips))} ÷ {membersN})</span><span className="tnum">{fmtMoney(myTip)}</span></div>
-              <div className="h-px bg-white/15 my-2.5" />
-              <div className="flex justify-between items-end"><span className="text-[14px] font-semibold">รายได้ของฉันจากงานนี้</span><span className="text-[26px] font-bold tnum">{fmtMoney(total)}</span></div>
-              {f.status === 'cancelled' && <div className="text-[12px] text-[#FF8A80] mt-1">งานถูกแคนเซิล — จะไม่นำมารวมในรายได้</div>}
-              {f.status === 'pending' && <div className="text-[12px] text-[#FFE066] mt-1">งานยังรอคอนเฟิร์ม — นับเป็นยอดคาดการณ์</div>}
-            </div>
-            {!isEdit && rec.enabled && <div className="px-5 pt-3 text-[12px] text-[#8E8E93]">* ทิปและสถานะรับเงินจะบันทึกให้เฉพาะงานแรกของชุดร้านประจำ</div>}
-          </div>
-        )}
-
-        <div className="px-4 pt-6 space-y-2.5">
-          {tab < 2 ? (
-            <div className="flex gap-2.5">
-              <button onClick={() => setTab(tab + 1)} className="flex-1 h-[50px] rounded-[14px] bg-white dark:bg-[#2C2C2E] text-[16px] font-semibold text-[#5856D6] dark:text-[#A5A3FF]">ถัดไป: {tabs[tab + 1].l}</button>
-              <button onClick={() => submit()} disabled={!valid} className={`flex-1 h-[50px] rounded-[14px] text-[16px] font-semibold text-white ${valid ? 'bg-[#5856D6] active:opacity-85' : 'bg-[#5856D6]/40'}`}>{isEdit ? 'บันทึก' : recDates.length > 1 ? `บันทึก ${recDates.length} งาน` : 'บันทึกเลย'}</button>
-            </div>
-          ) : (
-            <button onClick={() => submit()} disabled={!valid} className={`w-full h-[50px] rounded-[14px] text-[16px] font-semibold text-white ${valid ? 'bg-[#5856D6] active:opacity-85' : 'bg-[#5856D6]/40'}`}>บันทึก</button>
-          )}
-          {isEdit && (
-            <div className="rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden mt-4">
-              <button onClick={() => window.open(calendarUrl({ ...initial, ...formToData(f) }), '_blank', 'noopener')} className="w-full h-[50px] text-[16px] text-[#007AFF] dark:text-[#0A84FF] flex items-center justify-center gap-1.5"><Icon name="event" size={20} />เพิ่มลง Google Calendar</button>
-              <Sep />
-              {f.status !== 'cancelled' && (<>
-                <button onClick={() => submit({ status: 'cancelled' })} className="w-full h-[50px] text-[16px] text-[#FF9500] flex items-center justify-center gap-1.5"><Icon name="event_busy" size={20} />แคนเซิลงานนี้</button>
-                <Sep />
-              </>)}
-              <button onClick={() => onDelete(initial)} className="w-full h-[50px] text-[16px] text-[#FF3B30] flex items-center justify-center gap-1.5"><Icon name="delete" size={20} />ลบงาน</button>
-            </div>
-          )}
-        </div>
+        <div className="px-4 pt-5"><button onClick={() => onSave(gig, parseMoney(tips), paid)} className="w-full h-[52px] rounded-[14px] bg-[#34C759] text-white text-[17px] font-semibold">ปิดจ๊อบ</button></div>
       </div>
     </Sheet>
   );
@@ -2181,8 +2469,8 @@ function VenueSheet({ presets, onClose, onDelete }) {
                     {[isValidTime(v.startTime) && isValidTime(v.endTime) ? `${v.startTime}–${v.endTime}` : null, v.baseFee ? fmtMoney(v.baseFee) : null, v.travelMinutes !== undefined ? `เดินทาง ${v.travelMinutes} นาที` : null, `${v.count || 0} งาน`].filter(Boolean).join(' · ')}
                   </div>
                 </div>
-                {isHttpUrl(v.mapsUrl) && (
-                  <button onClick={() => openUrl(v.mapsUrl)} aria-label={`เปิดแผนที่ ${v.name}`} className="w-9 h-9 rounded-full flex items-center justify-center text-[#34C759] active:bg-[#34C759]/10"><Icon name="map" size={20} /></button>
+                {isMapRef(v.mapsUrl) && (
+                  <button onClick={() => openUrl(mapsPlaceUrl({ venueName: v.name, mapsUrl: v.mapsUrl }))} aria-label={`เปิดแผนที่ ${v.name}`} className="w-9 h-9 rounded-full flex items-center justify-center text-[#34C759] active:bg-[#34C759]/10"><Icon name="map" size={20} /></button>
                 )}
                 <button onClick={() => onDelete(v.name)} aria-label={`ลบร้าน ${v.name}`} className="w-9 h-9 rounded-full flex items-center justify-center text-[#FF3B30] active:bg-[#FF3B30]/10"><Icon name="delete" size={20} /></button>
               </div>
@@ -2423,12 +2711,17 @@ function InstallSheet({ install, onClose }) {
 /* =====================================================================
    ACCOUNT SETTINGS (วงหลัก · ตำแหน่งบ้าน · เผื่อเก็บของ)
    ===================================================================== */
-function SettingsSheet({ settings, onSave, onClose }) {
+function SettingsSheet({ settings, presets = {}, profiles = {}, onEditVenue = () => {}, onSave, onClose }) {
   const [d, setD] = useState(() => ({ ...settings, bands: [...settings.bands], feePresets: [...settings.feePresets] }));
   const [bandInput, setBandInput] = useState('');
   const home = d.homeMapsUrl.trim();
-  const ll = parseLatLng(home);
-  const short = !ll && isShortMapsLink(home);
+  const homeR = resolveMapRef(home, null);
+  const ll = homeR.lat !== undefined ? homeR : null;
+  const homeAddr = !ll && homeR.address ? homeR.address : null;
+  const short = homeR.kind === 'short-link';
+  const needLocality = homeR.kind === 'need-locality';
+  const homeRef = ll ? { lat: ll.lat, lng: ll.lng } : null;
+  const venueList = Object.entries(presets).map(([name, v]) => ({ name, ...v })).sort((a, b) => (b.count || 0) - (a.count || 0) || a.name.localeCompare(b.name, 'th'));
   const addBand = () => {
     const b = bandInput.trim();
     if (!b) return;
@@ -2437,13 +2730,14 @@ function SettingsSheet({ settings, onSave, onClose }) {
   };
   const moveUp = (i) => setD((p) => { const a = [...p.bands]; [a[i - 1], a[i]] = [a[i], a[i - 1]]; return { ...p, bands: a }; });
   const dirty = stableStr(normalizeSettings(d)) !== stableStr(normalizeSettings(settings));
-  const homeOk = !home || !!ll;
+  const homeOk = !home || !!ll || !!homeAddr;
+  const canSave = dirty && homeOk;
   return (
     <Sheet onClose={onClose} full z={70}>
       <div className="pt-4 px-2 flex items-center justify-between shrink-0">
         <button onClick={onClose} className="h-10 px-3 text-[17px] text-[#5856D6] dark:text-[#A5A3FF]">ยกเลิก</button>
         <div className="text-[17px] font-semibold">ตั้งค่าบัญชี</div>
-        <button disabled={!dirty || !homeOk} onClick={() => onSave(normalizeSettings({ ...d, homeMapsUrl: home }))} className={`h-10 px-3 text-[17px] font-semibold ${dirty && homeOk ? 'text-[#5856D6] dark:text-[#A5A3FF]' : 'text-[#C7C7CC] dark:text-[#48484A]'}`}>บันทึก</button>
+        <button disabled={!canSave} onClick={() => onSave(normalizeSettings({ ...d, homeMapsUrl: home }))} className={`h-10 px-3 text-[17px] font-semibold ${canSave ? 'text-[#5856D6] dark:text-[#A5A3FF]' : 'text-[#C7C7CC] dark:text-[#48484A]'}`}>บันทึก</button>
       </div>
       <div className="flex-1 overflow-y-auto no-scrollbar sheet-pad">
         <GroupLabel>วงหลักของฉัน</GroupLabel>
@@ -2484,12 +2778,12 @@ function SettingsSheet({ settings, onSave, onClose }) {
         <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
           <div className="flex items-center gap-3 px-4 min-h-[50px]">
             <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#34C759]"><Icon name="home" size={18} /></span>
-            <input value={d.homeMapsUrl} onChange={(e) => setD((p) => ({ ...p, homeMapsUrl: e.target.value }))} placeholder="วางลิงก์ Google Maps หรือพิกัดบ้าน" className="flex-1 min-w-0 bg-transparent outline-none text-[15px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+            <input value={d.homeMapsUrl} autoCapitalize="characters" autoCorrect="off" spellCheck={false} onChange={(e) => setD((p) => ({ ...p, homeMapsUrl: e.target.value }))} placeholder="Plus Code, พิกัด หรือลิงก์ Google Maps" className="flex-1 min-w-0 bg-transparent outline-none text-[15px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
             {home && <button onClick={() => setD((p) => ({ ...p, homeMapsUrl: '' }))} aria-label="ล้าง"><Icon name="cancel" fill size={18} className="text-[#C7C7CC]" /></button>}
           </div>
           {ll && (
             <div className="px-4 pb-3 flex items-center justify-between gap-2 text-[13px] st-confirmed">
-              <span className="flex items-center gap-1"><Icon name="check_circle" fill size={16} />อ่านพิกัดได้: <span className="tnum">{ll.lat.toFixed(5)}, {ll.lng.toFixed(5)}</span></span>
+              <span className="flex items-center gap-1"><Icon name="check_circle" fill size={16} />{homeR.kind === 'pluscode' ? 'Plus Code' : 'อ่านพิกัดได้'}: <span className="tnum">{ll.lat.toFixed(5)}, {ll.lng.toFixed(5)}</span></span>
               <button onClick={() => openUrl(`https://www.google.com/maps/search/?api=1&query=${ll.lat},${ll.lng}`)} className="text-[#007AFF] dark:text-[#0A84FF] font-semibold">ดูบนแผนที่</button>
             </div>
           )}
@@ -2501,9 +2795,35 @@ function SettingsSheet({ settings, onSave, onClose }) {
               <div><b>ข.</b> ในแอป Google Maps แตะค้างที่บ้านจนขึ้นหมุดแดง แล้วแตะ<b>ตัวเลขพิกัด</b>ด้านบน (เช่น 13.7563, 100.5018) เพื่อคัดลอก แล้ววางที่นี่</div>
             </div>
           )}
-          {home && !ll && !short && <div className="px-4 pb-3 text-[13px] st-cancelled flex items-center gap-1"><Icon name="error" size={16} fill />ไม่พบพิกัดในข้อความนี้ — วางลิงก์ Google Maps แบบเต็ม หรือพิกัด เช่น 13.7563, 100.5018</div>}
+          {homeAddr && <div className="px-4 pb-3 text-[13px] st-confirmed flex items-center gap-1"><Icon name="check_circle" fill size={16} />Plus Code + ชื่อเมือง — ให้ Google หาตำแหน่ง</div>}
+          {needLocality && <div className="px-4 pb-3 text-[13px] st-cancelled flex items-start gap-1"><Icon name="error" size={16} fill />Plus Code แบบสั้นของบ้านต้องมีชื่อเมืองต่อท้าย เช่น <b>PG2C+3V Bangkok</b> — หรือใช้แบบเต็ม เช่น 7P52PG2C+3V</div>}
+          {home && !ll && !homeAddr && !short && !needLocality && <div className="px-4 pb-3 text-[13px] st-cancelled flex items-center gap-1"><Icon name="error" size={16} fill />อ่านตำแหน่งไม่ได้ — ใช้ Plus Code, พิกัด เช่น 13.7563, 100.5018 หรือลิงก์ Google Maps แบบเต็ม</div>}
         </div>
-        <div className="px-5 pt-2 text-[12px] text-[#8E8E93]">ตำแหน่งบ้านเก็บในบัญชีของคุณเท่านั้น ใช้ส่งให้ Google Maps คำนวณเส้นทางตอนเลือกร้าน</div>
+        <div className="px-5 pt-2 text-[12px] text-[#8E8E93] leading-relaxed">
+          <b>วิธีเอา Plus Code:</b> ในแอป Google Maps แตะค้างที่บ้านจนขึ้นหมุดแดง → ปัดแผงด้านล่างขึ้น → แตะรหัสที่มีเครื่องหมาย <b>+</b> (เช่น PG2C+3V กรุงเทพมหานคร) เพื่อคัดลอก แล้ววางที่นี่ทั้งบรรทัด
+        </div>
+
+        <GroupLabel>ร้านและค่าเริ่มต้น</GroupLabel>
+        <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+          {venueList.length ? venueList.map((v, i) => {
+            const pr = profiles[v.name];
+            const st = pr && pr.mapsUrl ? mapRefStatus(pr.mapsUrl, homeRef) : null;
+            return (
+              <React.Fragment key={v.name}>
+                {i > 0 && <Sep />}
+                <button onClick={() => onEditVenue(v.name)} className="w-full flex items-center gap-3 px-4 py-2.5 text-left active:bg-black/[0.04] dark:active:bg-white/[0.06]">
+                  <span className={`w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 ${!st ? 'bg-[#8E8E93]' : st.ok ? 'bg-[#34C759]' : 'bg-[#FF9500]'}`}><Icon name={!st ? 'location_off' : st.ok ? 'location_on' : 'wrong_location'} size={18} /></span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[15px] font-semibold truncate">{v.name}</div>
+                    <div className="text-[12px] text-[#8E8E93] truncate">{pr ? GIG_TYPE_ORDER.filter((t) => pr.byType[t]).map((t) => `${GIG_TYPES[t].short} ${pr.byType[t].startTime}${pr.byType[t].baseFee ? ` ${fmtMoney(pr.byType[t].baseFee)}` : ''}`).join(' · ') || 'ยังไม่มีค่าเริ่มต้น' : ''}{!st ? ' · ยังไม่มีโลเคชั่น' : !st.ok ? ' · โลเคชั่นอ่านไม่ได้' : ''}</div>
+                  </div>
+                  <Icon name="chevron_right" className="text-[#C7C7CC]" />
+                </button>
+              </React.Fragment>
+            );
+          }) : <div className="py-6 text-center text-[14px] text-[#8E8E93]">ยังไม่มีร้านที่บันทึกไว้</div>}
+        </div>
+        <div className="px-5 pt-2 text-[12px] text-[#8E8E93]">แตะร้านเพื่อแก้โลเคชั่น โน้ตร้าน และค่าเริ่มต้นแต่ละประเภทงาน แล้วเลือกได้ว่าจะใช้กับงานไหนบ้าง</div>
 
         <GroupLabel>เผื่อเวลาเก็บของ / จอดรถ</GroupLabel>
         <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
@@ -2522,7 +2842,141 @@ function SettingsSheet({ settings, onSave, onClose }) {
         <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] px-4 py-3 text-[13px] leading-snug flex gap-2">
           {MAPS_KEY
             ? <><Icon name="check_circle" fill size={18} className="text-[#34C759] shrink-0" /><span>เชื่อม Google Maps (Routes API) แล้ว — คำนวณเวลาเดินทางอัตโนมัติเมื่อเลือกร้านที่ลิงก์มีพิกัดหรือชื่อสถานที่</span></>
-            : <><Icon name="info" size={18} className="text-[#FF9500] shrink-0" /><span className="text-[#8E8E93]">ยังไม่ได้ใส่ Google Maps API key ในแอป จึงยังคำนวณเวลาเดินทางอัตโนมัติไม่ได้ (ดู SETUP-FIREBASE.md ข้อ 7)</span></>}
+            : <><Icon name="info" size={18} className="text-[#FF9500] shrink-0" /><span className="text-[#8E8E93]">ยังไม่ได้ใส่ Google Maps API key ในแอป จึงยังคำนวณเวลาเดินทางอัตโนมัติไม่ได้ (ดู SETUP-GOOGLE.md ข้อ 6)</span></>}
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/* =====================================================================
+   VENUE DEFAULTS — แก้ค่าเริ่มต้นของร้าน + เลือกขอบเขต (ทั้งหมด / เฉพาะวันที่ / ตั้งแต่วันที่)
+   ===================================================================== */
+function VenueDefaultsSheet({ profile, gigs, settings, onClose, onApply }) {
+  const typesUsed = GIG_TYPE_ORDER.filter((t) => profile.byType[t]);
+  const [type, setType] = useState(typesUsed[0] || 'regular');
+  const base = profile.byType[type] || { startTime: '21:00', duration: DEFAULT_DURATION, baseFee: 0, bandName: '', members: 1 };
+  const [mapsUrl, setMapsUrl] = useState(profile.mapsUrl || '');
+  const [note, setNote] = useState(profile.note || '');
+  const [vals, setVals] = useState(() => Object.fromEntries(GIG_TYPE_ORDER.map((t) => [t, { ...(profile.byType[t] || base) }])));
+  const v = vals[type];
+  const setV = (k, x) => setVals((all) => ({ ...all, [type]: { ...all[type], [k]: x } }));
+  const [scope, setScope] = useState('from');
+  const [date, setDate] = useState(todayStr());
+  const venueGigs = gigs.filter((g) => g.venueName === profile.name);
+  const inScope = (g) => scope === 'all' || (scope === 'date' ? g.date === date : g.date >= date);
+  const typeChanged = ['startTime', 'duration', 'baseFee', 'bandName', 'members'].some((k) => String(v[k] ?? '') !== String((profile.byType[type] || {})[k] ?? ''));
+  const mapChanged = mapsUrl.trim() !== (profile.mapsUrl || '').trim();
+  const noteChanged = note.trim() !== (profile.note || '').trim();
+  const affected = venueGigs.filter((g) => inScope(g) && (mapChanged || (typeChanged && g.gigType === type)));
+  const past = affected.filter((g) => g.date < todayStr()).length;
+  const badMap = mapsUrl.trim() && !isMapRef(mapsUrl);
+  const canSave = (typeChanged || mapChanged || noteChanged) && !badMap && (scope === 'all' || isValidDate(date));
+  const durH = Math.floor(v.duration / 60), durM = v.duration % 60;
+  const selCls = 'h-9 rounded-[9px] bg-[#767680]/[0.12] dark:bg-[#767680]/[0.24] px-2 text-[16px] font-semibold tnum outline-none appearance-none text-center';
+  const st = mapsUrl.trim() ? mapRefStatus(mapsUrl, homeLatLng(settings)) : null;
+  return (
+    <Sheet onClose={onClose} full z={75}>
+      <div className="pt-4 px-2 flex items-center justify-between shrink-0">
+        <button onClick={onClose} className="h-10 px-3 text-[17px] text-[#5856D6] dark:text-[#A5A3FF]">ยกเลิก</button>
+        <div className="text-[17px] font-semibold truncate max-w-[55%]">{profile.name}</div>
+        <button disabled={!canSave} onClick={() => onApply({ name: profile.name, type, vals: v, typeChanged, mapsUrl: mapsUrl.trim(), mapChanged, note: note.trim(), scope, date, affected, past })}
+          className={`h-10 px-3 text-[17px] font-semibold ${canSave ? 'text-[#5856D6] dark:text-[#A5A3FF]' : 'text-[#C7C7CC] dark:text-[#48484A]'}`}>บันทึก</button>
+      </div>
+      <div className="flex-1 overflow-y-auto no-scrollbar sheet-pad">
+        <GroupLabel>ใช้กับทุกประเภทงานของร้านนี้</GroupLabel>
+        <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+          <div className="flex items-center gap-3 px-4 min-h-[48px]">
+            <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center text-white shrink-0 bg-[#34C759]"><Icon name="location_on" size={18} /></span>
+            <input value={mapsUrl} onChange={(e) => setMapsUrl(e.target.value)} autoCapitalize="characters" autoCorrect="off" spellCheck={false} placeholder="โลเคชั่น: Plus Code หรือลิงก์ Google Maps" className="flex-1 min-w-0 bg-transparent outline-none text-[15px] placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+          </div>
+          {st && <div className={`px-4 pb-2 -mt-1 text-[12px] flex items-start gap-1 ${st.ok ? 'st-confirmed' : 'st-issue'}`}><Icon name={st.ok ? 'check_circle' : 'info'} size={14} fill={st.ok} />{st.text}</div>}
+          <Sep />
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="โน้ตของร้าน (เช่น ที่จอดรถ เบอร์ผู้จัดการ)" className="w-full px-4 py-3 bg-transparent outline-none text-[15px] resize-none placeholder:text-[#C7C7CC] dark:placeholder:text-[#5A5A5E]" />
+        </div>
+
+        <GroupLabel>ค่าเริ่มต้นตามประเภทงาน</GroupLabel>
+        <div className="mx-4"><Segmented value={type} onChange={setType} options={GIG_TYPE_ORDER.map((t) => ({ value: t, label: GIG_TYPES[t].short }))} /></div>
+        {!profile.byType[type] && <div className="px-5 pt-1.5 text-[12px] text-[#8E8E93]">ร้านนี้ยังไม่เคยมีงาน{GIG_TYPES[type].short} — ตั้งค่าเริ่มต้นไว้ล่วงหน้าได้</div>}
+        <div className="mx-4 mt-2 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+          <Row label="เวลาเริ่ม" icon="play_arrow" iconBg="#34C759"><input type="time" value={v.startTime} onChange={(e) => setV('startTime', e.target.value)} className={inputCls} /></Row>
+          <Sep />
+          <Row label="เล่นนาน" icon="timelapse" iconBg="#FF9500">
+            <div className="flex items-center gap-1.5">
+              <select aria-label="ชั่วโมง" value={durH} onChange={(e) => setV('duration', Number(e.target.value) * 60 + durM)} className={selCls}>{Array.from({ length: 13 }, (_, h) => <option key={h} value={h}>{h}</option>)}</select>
+              <span className="text-[14px] text-[#8E8E93]">ชม.</span>
+              <select aria-label="นาที" value={durM} onChange={(e) => setV('duration', durH * 60 + Number(e.target.value))} className={selCls}>{Array.from({ length: 12 }, (_, i) => i * 5).map((m) => <option key={m} value={m}>{pad(m)}</option>)}</select>
+              <span className="text-[14px] text-[#8E8E93]">นาที</span>
+            </div>
+          </Row>
+          {type !== 'rehearsal' && (<><Sep /><Row label="ค่าตัว (ของฉัน)" icon="payments" iconBg="#5856D6"><input inputMode="decimal" value={v.baseFee || ''} placeholder="0" onChange={(e) => setV('baseFee', parseMoney(e.target.value.replace(/[^\d.,]/g, '')))} className={inputCls + ' tnum font-semibold'} /></Row></>)}
+          <Sep />
+          <Row label="ชื่อวง" icon="groups" iconBg="#FF2D55"><input value={v.bandName || ''} onChange={(e) => setV('bandName', e.target.value)} placeholder="-" className={inputCls} /></Row>
+          <Sep />
+          <Row label="สมาชิก" icon="group" iconBg="#5AC8FA">
+            <input inputMode="numeric" value={v.members || 1} onChange={(e) => setV('members', Math.min(Math.max(parseInt(e.target.value, 10) || 1, 1), 99))} className={inputCls + ' tnum w-12'} /><span className="text-[#8E8E93] ml-1">คน</span>
+          </Row>
+        </div>
+
+        <GroupLabel>ใช้กับงานไหนบ้าง</GroupLabel>
+        <div className="mx-4"><Segmented value={scope} onChange={setScope} options={[{ value: 'all', label: 'ทั้งหมด' }, { value: 'date', label: 'เฉพาะวันที่' }, { value: 'from', label: 'ตั้งแต่วันที่' }]} /></div>
+        {scope !== 'all' && (
+          <div className="mx-4 mt-2 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
+            <Row label={scope === 'date' ? 'วันที่' : 'ตั้งแต่วันที่'} icon="calendar_today" iconBg="#FF3B30"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} /></Row>
+          </div>
+        )}
+        <div className="px-5 pt-2 text-[12.5px] leading-relaxed text-[#8E8E93]">
+          {scope === 'all' && 'เปลี่ยนทุกงานของร้านนี้ รวมงานที่ผ่านมาแล้ว (ยอดเงินย้อนหลังเปลี่ยนตาม) และใช้เป็นค่าเริ่มต้นใหม่'}
+          {scope === 'date' && 'เปลี่ยนเฉพาะงานวันนั้น — ค่าเริ่มต้นของร้านไม่เปลี่ยน'}
+          {scope === 'from' && 'เปลี่ยนงานตั้งแต่วันนั้นเป็นต้นไป และใช้เป็นค่าเริ่มต้นใหม่ — งานก่อนหน้านั้นไม่เปลี่ยน'}
+          <div className={`mt-1 font-semibold ${past ? 'st-issue' : 'text-black dark:text-white'}`}>จะเปลี่ยน {affected.length} งาน{past ? ` (เป็นงานที่ผ่านมาแล้ว ${past} งาน)` : ''}{noteChanged ? ' · อัปเดตโน้ตร้าน' : ''}</div>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/* =====================================================================
+   MONTHLY RENEWAL — เดือนหน้ายังมีร้านไหนประจำอยู่บ้าง
+   ===================================================================== */
+const ymLabel = (ym) => { const [y, m] = ym.split('-').map(Number); return monthLabel(y, m); };
+const shiftYM = (ym, n) => { let [y, m] = ym.split('-').map(Number); m += n; while (m > 12) { m -= 12; y++; } while (m < 1) { m += 12; y--; } return `${y}-${pad(m)}`; };
+function RenewSheet({ target, candidates, onConfirm, onSkip }) {
+  const [rows, setRows] = useState(() => candidates.map((c) => ({ ...c, on: true })));
+  const upd = (i, patch) => setRows((r) => r.map((x, k) => (k === i ? { ...x, ...patch } : x)));
+  const chosen = rows.filter((r) => r.on && r.days.length);
+  return (
+    <Sheet onClose={onSkip} z={70}>
+      <div className="pt-5 px-5 pb-2 shrink-0">
+        <div className="text-[13px] font-semibold text-[#8E8E93]">ต่อสัญญางานประจำ</div>
+        <div className="text-[22px] font-bold leading-tight">{ymLabel(target)} ยังประจำร้านไหนอยู่บ้าง?</div>
+        <div className="text-[13px] text-[#8E8E93] mt-1">ติ๊กร้านที่ยังต่อสัญญา แก้วันประจำได้ แล้วแอปจะลงคิวทั้งเดือนให้</div>
+      </div>
+      <div className="overflow-y-auto no-scrollbar sheet-pad">
+        <div className="mx-4 rounded-[12px] bg-white dark:bg-[#2C2C2E] overflow-hidden divide-y divide-black/[0.06] dark:divide-white/[0.08]">
+          {rows.map((r, i) => (
+            <div key={r.venueName} className={`px-4 py-3 ${r.on ? '' : 'opacity-50'}`}>
+              <button onClick={() => upd(i, { on: !r.on })} className="w-full flex items-center gap-3 text-left" aria-pressed={r.on}>
+                <Icon name={r.on ? 'check_circle' : 'radio_button_unchecked'} fill={r.on} size={24} className={r.on ? 'text-[#34C759]' : 'text-[#C7C7CC]'} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[16px] font-semibold truncate">{r.venueName}</div>
+                  <div className="text-[12.5px] text-[#8E8E93] tnum">{r.template.startTime}–{r.template.endTime}{r.template.bandName ? ` · ${r.template.bandName}` : ''}{r.template.baseFee ? ` · ${fmtMoney(r.template.baseFee)}` : ''}</div>
+                </div>
+              </button>
+              {r.on && (
+                <div className="grid grid-cols-7 gap-1.5 mt-2.5 pl-9">
+                  {[1, 2, 3, 4, 5, 6, 0].map((d) => {
+                    const on = r.days.includes(d);
+                    return <button key={d} onClick={() => upd(i, { days: on ? r.days.filter((x) => x !== d) : [...r.days, d] })} aria-pressed={on} className={`h-8 rounded-full text-[13px] font-semibold ${on ? 'bg-[#007AFF] text-white' : 'bg-[#F2F2F7] dark:bg-[#3A3A3C]'}`}>{TH_DAYS_MINI[d]}</button>;
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="px-4 pt-5 space-y-2.5">
+          <button disabled={!chosen.length} onClick={() => onConfirm(target, chosen)} className={`w-full h-[52px] rounded-[14px] text-[17px] font-semibold text-white ${chosen.length ? 'bg-[#5856D6]' : 'bg-[#5856D6]/40'}`}>ลงคิว{ymLabel(target)} ({chosen.length} ร้าน)</button>
+          <button onClick={onSkip} className="w-full h-[46px] rounded-[14px] bg-white dark:bg-[#2C2C2E] text-[15px] font-semibold text-[#8E8E93]">ไม่มีร้านไหนต่อสัญญา</button>
         </div>
       </div>
     </Sheet>
@@ -2560,7 +3014,7 @@ function Drawer({ onClose, user, sync, issueCount, venueCount, settings, install
     else toast(`ใช้เวอร์ชันล่าสุดแล้ว (v${APP_VERSION})`, 'verified');
   };
   const bandsSub = settings.bands.length ? settings.bands.join(', ') : 'ยังไม่ได้ตั้งวงหลัก';
-  const homeSub = parseLatLng(settings.homeMapsUrl) ? 'ตั้งตำแหน่งบ้านแล้ว' : 'ยังไม่ได้ตั้งตำแหน่งบ้าน';
+  const homeSub = homeTarget(settings) ? 'ตั้งตำแหน่งบ้านแล้ว' : 'ยังไม่ได้ตั้งตำแหน่งบ้าน';
   return (
     <div className="fixed inset-0 z-[65]">
       <div className="absolute inset-0 bg-black/40 anim-fade" onClick={onClose} />
@@ -2575,14 +3029,15 @@ function Drawer({ onClose, user, sync, issueCount, venueCount, settings, install
             {user ? <Avatar user={user} size={48} /> : <span className="w-12 h-12 rounded-full bg-[#8E8E93] text-white flex items-center justify-center"><Icon name="smartphone" /></span>}
             <div className="min-w-0 flex-1">
               <div className="text-[16px] font-semibold truncate">{user ? (user.displayName || 'ผู้ใช้ GigFlow') : 'โหมดเครื่องเดียว'}</div>
-              <div className="text-[12.5px] text-[#8E8E93] truncate">{user ? user.email : 'ยังไม่ได้เชื่อม Firebase'}</div>
-              <div className="mt-0.5"><SyncBadge state={sync.state} /></div>
+              <div className="text-[12.5px] text-[#8E8E93] truncate">{user ? user.email : 'ยังไม่ได้ตั้งค่า Google Client ID'}</div>
+              <div className="mt-0.5"><SyncBadge state={sync.state} dirty={sync.dirty} onClick={() => sync.syncNow(true)} /></div>
+              {user && <div className="text-[11px] text-[#8E8E93]">{fmtAgo(sync.lastSyncAt)}</div>}
             </div>
           </div>
 
           {(issueCount > 0 || update.available) && (
             <div className="mx-3 mt-3 rounded-[14px] bg-white dark:bg-[#2C2C2E] overflow-hidden">
-              {issueCount > 0 && <DrawerRow icon="notification_important" color="#FF9500" label="ต้องเช็คปัญหา" sub="งานติดปัญหาที่เหลือไม่ถึง 2 วัน" badge={issueCount} onClick={onIssues} />}
+              {issueCount > 0 && <DrawerRow icon="notification_important" color="#FF9500" label="ต้องตามงาน" sub="รอคอนเฟิร์ม / ติดปัญหา ใกล้ถึงวันงาน" badge={issueCount} onClick={onIssues} />}
               {issueCount > 0 && update.available && <Sep />}
               {update.available && <DrawerRow icon="system_update" color="#007AFF" label={`มีอัปเดตใหม่ v${update.latest}`} sub="แตะเพื่อโหลดเวอร์ชันล่าสุด" onClick={applyUpdate} />}
             </div>
@@ -2604,16 +3059,18 @@ function Drawer({ onClose, user, sync, issueCount, venueCount, settings, install
               <>
                 <div className="flex items-center gap-3 px-4 py-2.5 min-h-[50px]">
                   <span className="w-[30px] h-[30px] rounded-[8px] flex items-center justify-center bg-white border border-black/10 shrink-0"><GoogleG size={18} /></span>
-                  <div className="flex-1 min-w-0"><div className="text-[16px]">ผูกกับบัญชี Google แล้ว</div><div className="text-[12px] text-[#8E8E93] truncate">{user.email}</div></div>
+                  <div className="flex-1 min-w-0"><div className="text-[16px]">ผูกกับบัญชี Google แล้ว</div><div className="text-[12px] text-[#8E8E93] truncate">{user.email} · เก็บข้อมูลใน Google Drive</div></div>
                   <Icon name="link" className="text-[#34C759]" />
                 </div>
                 <Sep />
+                <DrawerRow icon="sync" color="#007AFF" label="ซิงก์กับ Google Drive ตอนนี้" sub={fmtAgo(sync.lastSyncAt)} onClick={() => sync.syncNow(true)} right={null} />
+                <Sep />
                 <DrawerRow icon="logout" color="#8E8E93" label="ออกจากระบบ" onClick={onSignOut} right={null} />
                 <Sep />
-                <DrawerRow icon="delete_forever" color="#FF3B30" label="ลบบัญชีและข้อมูลถาวร" destructive onClick={onDeleteAccount} right={null} />
+                <DrawerRow icon="delete_forever" color="#FF3B30" label="ลบบัญชีและข้อมูลถาวร" sub="ลบข้อมูลใน Drive + ยกเลิกสิทธิ์ของแอป" destructive onClick={onDeleteAccount} right={null} />
               </>
             ) : (
-              <div className="px-4 py-3 text-[13px] text-[#8E8E93] leading-snug">ยังไม่ได้เชื่อม Firebase จึงยังไม่มีระบบล็อกอิน — ดูวิธีตั้งค่าใน SETUP-FIREBASE.md</div>
+              <div className="px-4 py-3 text-[13px] text-[#8E8E93] leading-snug">ยังไม่ได้ใส่ Google Client ID จึงยังไม่มีระบบล็อกอิน — ดูวิธีตั้งค่าใน SETUP-GOOGLE.md</div>
             )}
           </div>
 
@@ -2680,11 +3137,13 @@ function applyScope(gigs, original, updated, scope) {
   return gigs.map((g) => (g.id === original.id ? updated : g.recurringGroupId === gid ? { ...g, ...patch, updatedAt: ts } : g));
 }
 
-function App({ user = null }) {
+function App({ user = null, onSignedOut = () => {} }) {
   const cloud = !!user;
-  const [gigs, setGigs] = useState(() => (cloud ? [] : loadGigs()));
-  const [venues, setVenues] = useState(() => (cloud ? {} : loadVenues()));
-  const [settings, setSettings] = useState(() => (cloud ? DEFAULT_SETTINGS : loadSettings()));
+  // โหมดล็อกอิน: เปิดจากแคชในเครื่องของบัญชีนี้ทันที แล้วซิงก์กับ Google Drive
+  const [acct] = useState(() => (cloud ? loadAccount(user.uid) : null));
+  const [gigs, setGigs] = useState(() => (cloud ? acct.gigs : loadGigs()));
+  const [venues, setVenues] = useState(() => (cloud ? acct.venues : loadVenues()));
+  const [settings, setSettings] = useState(() => (cloud ? acct.settings : loadSettings()));
   const [tab, setTab] = useState('home');
   const [theme, setTheme] = useTheme();
   const [sheet, setSheet] = useState(null);
@@ -2699,7 +3158,7 @@ function App({ user = null }) {
   const update = useUpdateCheck();
   const install = useInstall();
 
-  // โหมดเครื่องเดียวเท่านั้นที่เก็บลง localStorage — โหมดล็อกอินเก็บบน Firestore ของผู้ใช้
+  // โหมดเครื่องเดียวเก็บลง localStorage — โหมดล็อกอินเก็บแคชแยกตามบัญชี (useDriveSync) แล้วซิงก์ขึ้น Google Drive
   useEffect(() => { if (!cloud) try { localStorage.setItem(KEY_GIGS, JSON.stringify(gigs)); } catch (e) {} }, [gigs]);
   useEffect(() => { if (!cloud) try { localStorage.setItem(KEY_VENUES, JSON.stringify(venues)); } catch (e) {} }, [venues]);
   useEffect(() => { if (!cloud) try { localStorage.setItem(KEY_SETTINGS, JSON.stringify(settings)); } catch (e) {} }, [settings]);
@@ -2711,7 +3170,8 @@ function App({ user = null }) {
     toastTimer.current = setTimeout(() => setToastState(null), 2400);
   }, []);
 
-  const sync = useCloudSync(user, gigs, setGigs, venues, setVenues, settings, setSettings, toast);
+  const sync = useDriveSync(user, acct && acct.meta, gigs, setGigs, venues, setVenues, settings, setSettings, toast);
+  const syncTap = () => sync.syncNow(true);
   const issueCount = gigs.filter((g) => needsIssueCheck(g, now)).length;
 
   // ย้ายข้อมูลเก่าจากโหมดเครื่องเดียว (ก่อนมีระบบล็อกอิน) ขึ้นบัญชี — ถามครั้งเดียวต่อบัญชี
@@ -2740,11 +3200,23 @@ function App({ user = null }) {
     });
   }, [sync.ready]);
 
-  const askSignOut = () => setAction({
-    title: user?.email,
-    message: 'ออกจากระบบแล้ว ข้อมูลยังอยู่ในบัญชีของคุณ ล็อกอินใหม่เมื่อไหร่ก็กลับมาเหมือนเดิม',
-    actions: [{ label: 'ออกจากระบบ', destructive: true, onClick: () => fbAuth.signOut() }],
-  });
+  /** ออกจากระบบ: ล้างข้อมูลของบัญชีนี้ออกจากเครื่อง (ข้อมูลยังอยู่ใน Google Drive) */
+  const signOutNow = () => { clearAccountCache(user.uid); clearToken(); onSignedOut(); };
+  const askSignOut = () => {
+    const pending = sync.dirty;
+    setAction({
+      title: user?.email,
+      message: pending
+        ? 'มีการแก้ไขที่ยังไม่ได้ซิงก์ขึ้น Google Drive — ถ้าออกจากระบบตอนนี้ การแก้ไขนั้นจะหายไป'
+        : 'ข้อมูลเก็บอยู่ใน Google Drive ของคุณ ล็อกอินใหม่เมื่อไหร่ก็กลับมาเหมือนเดิม (ข้อมูลที่แคชไว้ในเครื่องนี้จะถูกล้าง)',
+      actions: pending
+        ? [
+          { label: 'ซิงก์แล้วออกจากระบบ', bold: true, onClick: async () => { await sync.syncNow(true); if (!sync.meta.current.dirty) signOutNow(); else toast('ซิงก์ไม่สำเร็จ — ยังไม่ได้ออกจากระบบ', 'error'); } },
+          { label: 'ออกโดยไม่ซิงก์', destructive: true, onClick: signOutNow },
+        ]
+        : [{ label: 'ออกจากระบบ', destructive: true, onClick: signOutNow }],
+    });
+  };
 
   const presets = useMemo(() => {
     const p = {};
@@ -2772,6 +3244,12 @@ function App({ user = null }) {
     return Object.keys(c).sort((a, b) => c[b] - c[a]);
   }, [gigs]);
 
+  const profiles = useMemo(() => Object.fromEntries(Object.keys(presets).map((n) => [n, venueProfile(venues, gigs, n)])), [presets, venues, gigs]);
+  const [detailId, setDetailId] = useState(null);
+  const [closeJobId, setCloseJobId] = useState(null);
+  const [venueEdit, setVenueEdit] = useState(null);
+  const [renewInfo, setRenewInfo] = useState(null);
+
   /** จำจำนวนสมาชิกตามวง */
   const rememberBandMembers = (list) => {
     const upd = {};
@@ -2779,13 +3257,24 @@ function App({ user = null }) {
     if (!Object.keys(upd).length) return;
     setSettings((st) => (Object.entries(upd).every(([b, n]) => st.bandMembers[b] === n) ? st : { ...st, bandMembers: { ...st.bandMembers, ...upd } }));
   };
-  const rememberVenue = (d) => {
+  /** จำร้าน: ค่าเริ่มต้นแต่ละประเภท = ครั้งแรกที่กรอก (ไม่ทับ), โลเคชั่น/โน้ตร้านใช้ร่วมกัน */
+  const rememberVenue = (d, venueNote) => {
     if (!d.venueName) return;
-    setVenues((v) => ({ ...v, [d.venueName]: { startTime: d.startTime, endTime: d.endTime, baseFee: d.baseFee, mapsUrl: d.mapsUrl || v[d.venueName]?.mapsUrl || '', travelMinutes: d.travelMinutes, bandName: d.bandName, updatedAt: Date.now() } }));
+    const prof = profiles[d.venueName];
+    setVenues((v) => {
+      const cur = v[d.venueName] && !v[d.venueName].deleted ? v[d.venueName] : {};
+      const defaults = { ...(cur.defaults || {}) };
+      if (d.gigType && !defaults[d.gigType] && !(prof && prof.byType[d.gigType])) {
+        defaults[d.gigType] = { startTime: d.startTime, duration: durBetween(d.startTime, d.endTime), baseFee: d.baseFee, bandName: d.bandName, members: d.members };
+      }
+      return { ...v, [d.venueName]: { ...cur, mapsUrl: cur.mapsUrl || (prof && prof.mapsUrl) || d.mapsUrl || '', note: venueNote !== undefined ? venueNote : (cur.note || (prof && prof.note) || ''), defaults, updatedAt: Date.now() } };
+    });
   };
 
-  const openCreate = (date) => setSheet({ mode: 'create', key: uid(), gig: { date: isValidDate(date) ? date : todayStr(), startTime: '21:00', endTime: '23:00', venueName: '', status: 'pending', bandName: settings.bands[0] || '', members: settings.bandMembers[settings.bands[0]] || 1, gigType: '', issueNote: '', baseFee: 0, mapsUrl: '', travelMinutes: 30, notes: '', tips: 0, isPaid: false, recurringGroupId: null } });
+  const openCreate = (date) => setSheet({ mode: 'create', key: uid(), gig: { date: isValidDate(date) ? date : todayStr(), startTime: '21:00', endTime: endTimeFrom('21:00', DEFAULT_DURATION), venueName: '', status: '', bandName: settings.bands[0] || '', members: settings.bandMembers[settings.bands[0]] || 1, gigType: '', issueNote: '', baseFee: 0, mapsUrl: '', travelMinutes: 30, notes: '', tips: 0, isPaid: false, recurringGroupId: null } });
   const openEdit = (g) => setSheet({ mode: 'edit', key: g.id, gig: g });
+  const openDetail = (g) => setDetailId(g.id);
+  const openCopy = (g) => setSheet({ mode: 'copy', key: uid(), gig: { ...g, id: undefined, date: '', tips: 0, isPaid: false, jobClosed: false, recurringGroupId: null, status: g.status === 'cancelled' ? (g.preCancelStatus || 'confirmed') : g.status } });
 
   const askScope = (original, kind, onPick) => {
     const gid = original.recurringGroupId;
@@ -2804,34 +3293,167 @@ function App({ user = null }) {
     });
   };
 
+  /* ---------- บันทึกตั้งค่า + แมพของร้าน (อัปเดตงานที่ยังไม่ถึง และคำนวณเวลาเดินทางใหม่) ---------- */
+  const recalcTravel = async (allGigs, ids, st) => {
+    if (!MAPS_KEY || !ids.length) return { done: 0, failed: 0, skipped: ids.length };
+    const ref = homeLatLng(st);
+    const byId = new Map(allGigs.map((g) => [g.id, g]));
+    const upd = {};
+    let failed = 0;
+    for (const id of ids.slice(0, 60)) {
+      const g = byId.get(id);
+      const dest = routeTargetFromUrl(g.mapsUrl, ref);
+      const prev = findPrevGig(g, allGigs);
+      const origin = prev ? routeTargetFromUrl(prev.mapsUrl, ref) : homeTarget(st);
+      if (!dest || !origin) { failed++; continue; }
+      try { const r = await fetchDriveMinutes(origin, dest, gigRange(g)[0] - 60); upd[id] = r.minutes + st.packMinutes; }
+      catch (e) { failed++; }
+    }
+    if (Object.keys(upd).length) {
+      const ts = Date.now();
+      setGigs((p) => p.map((g) => (upd[g.id] !== undefined ? { ...g, travelMinutes: upd[g.id], updatedAt: ts } : g)));
+    }
+    return { done: Object.keys(upd).length, failed, skipped: Math.max(0, ids.length - 60) };
+  };
+  const saveSettings = (newSettings) => { setSettings(newSettings); setSettingsOpen(false); toast('บันทึกการตั้งค่าแล้ว'); };
+
+  /* ---------- แก้ค่าเริ่มต้นของร้าน: ทั้งหมด / เฉพาะวันที่ / ตั้งแต่วันที่ ---------- */
+  const applyVenueDefaults = (x) => {
+    const run = async () => {
+      const ts = Date.now();
+      setVenues((v) => {
+        const cur = v[x.name] && !v[x.name].deleted ? v[x.name] : {};
+        const next = { ...cur, note: x.note, updatedAt: ts };
+        if (x.scope !== 'date') {
+          if (x.mapChanged) next.mapsUrl = x.mapsUrl;
+          if (x.typeChanged) next.defaults = { ...(cur.defaults || {}), [x.type]: { ...x.vals } };
+        }
+        return { ...v, [x.name]: next };
+      });
+      const ids = new Set(x.affected.map((g) => g.id));
+      const next = gigs.map((g) => {
+        if (!ids.has(g.id)) return g;
+        let u = { ...g, updatedAt: ts };
+        if (x.mapChanged) u.mapsUrl = x.mapsUrl;
+        if (x.typeChanged && g.gigType === x.type) {
+          u = { ...u, startTime: x.vals.startTime, endTime: endTimeFrom(x.vals.startTime, x.vals.duration), bandName: x.vals.bandName || '', members: x.vals.members || 1 };
+          if (isPaidWork(g)) u.baseFee = parseMoney(x.vals.baseFee);
+        }
+        return u;
+      });
+      setGigs(next);
+      setVenueEdit(null);
+      const future = next.filter((g) => ids.has(g.id) && ACTIVE.has(g.status) && gigRange(g)[1] > nowAbs()).map((g) => g.id);
+      if ((x.mapChanged || x.typeChanged) && future.length && MAPS_KEY) {
+        toast(`บันทึกแล้ว · กำลังคำนวณเวลาเดินทาง ${future.length} งาน…`, 'progress_activity');
+        const r = await recalcTravel(next, future, settings);
+        toast(`อัปเดต ${ids.size} งาน · คำนวณเวลาเดินทางใหม่ ${r.done} งาน${r.failed ? ` (ไม่สำเร็จ ${r.failed})` : ''}`, r.failed ? 'error' : 'check_circle');
+      } else toast(`บันทึกค่าของ “${x.name}” แล้ว${ids.size ? ` · อัปเดต ${ids.size} งาน` : ''}`);
+    };
+    if (x.past > 0) setAction({ title: `เปลี่ยนงานที่ผ่านมาแล้ว ${x.past} งาน?`, message: `“${x.name}” — รวมทั้งหมด ${x.affected.length} งาน ยอดเงินย้อนหลังของงานเหล่านั้นจะเปลี่ยนตาม`, actions: [{ label: `ยืนยันเปลี่ยน ${x.affected.length} งาน`, destructive: true, onClick: run }] });
+    else run();
+  };
+
+  /* ---------- งานประจำรายเดือน: ตัดคิวเดิมที่เกินเดือนนี้ (ครั้งเดียว) + ถามต่อสัญญาทุกสิ้นเดือน ---------- */
+  const promptedRef = useRef(false);
+  const dayKey = todayStr();
+  useEffect(() => {
+    if (!sync.ready || promptedRef.current || action) return;
+    const t = todayStr(), end = monthEndOf(t);
+    if (!settings.trimmedRegular) {
+      const extra = gigs.filter((g) => g.gigType === 'regular' && g.recurringGroupId && g.date > end);
+      if (!extra.length) { setSettings((st) => ({ ...st, trimmedRegular: true })); return; }
+      promptedRef.current = true;
+      const done = () => { setSettings((st) => ({ ...st, trimmedRegular: true })); promptedRef.current = false; };
+      setAction({
+        title: `ตัดคิวงานประจำที่ลงไว้เกินเดือนนี้ ${extra.length} งาน?`,
+        message: 'ตอนนี้งานประจำลงคิวทีละเดือน แล้วแอปจะถามต่อสัญญาทุกสิ้นเดือน — คิวหลังสิ้นเดือนนี้จะถูกลบ (กู้คืนไม่ได้)',
+        actions: [{ label: `ลบ ${extra.length} งาน`, destructive: true, onClick: () => { const ids = new Set(extra.map((g) => g.id)); setGigs((p) => p.filter((g) => !ids.has(g.id))); toast(`ตัดคิวงานประจำ ${extra.length} งานแล้ว`, 'delete'); done(); } }],
+        onCancel: done,
+      });
+      return;
+    }
+    const target = t === end ? shiftYM(t.slice(0, 7), 1) : t.slice(0, 7);
+    if (settings.renewAskedFor === target) return;
+    const source = shiftYM(target, -1);
+    const has = new Set(gigs.filter((g) => g.gigType === 'regular' && g.date.startsWith(target)).map((g) => g.venueName));
+    const byVenue = {};
+    gigs.filter((g) => g.gigType === 'regular' && g.status !== 'cancelled' && g.date.startsWith(source) && !has.has(g.venueName)).sort(cmpGig).forEach((g) => {
+      const c = byVenue[g.venueName] || (byVenue[g.venueName] = { venueName: g.venueName, template: g, days: [] });
+      c.template = g;
+      if (!c.days.includes(weekdayOf(g.date))) c.days.push(weekdayOf(g.date));
+    });
+    const candidates = Object.values(byVenue);
+    if (!candidates.length) return;
+    promptedRef.current = true;
+    setRenewInfo({ target, candidates });
+  }, [sync.ready, settings.trimmedRegular, settings.renewAskedFor, dayKey, action]);
+  const confirmRenew = (target, chosen) => {
+    const first = `${target}-01`, t = todayStr(), start = first < t ? t : first, ts = Date.now();
+    const created = [];
+    let skipped = 0;
+    chosen.forEach((c) => {
+      const gid = c.template.recurringGroupId || uid();
+      genMonthDates(start, c.days).forEach((d) => {
+        const g = { ...c.template, id: uid(), date: d, status: 'confirmed', issueNote: '', preCancelStatus: '', notes: '', tips: 0, isPaid: false, jobClosed: false, recurringGroupId: gid, createdAt: ts, updatedAt: ts };
+        if (findIssues(g, [...gigs, ...created]).conflicts.length) { skipped++; return; }
+        created.push(g);
+      });
+    });
+    setGigs((p) => [...p, ...created]);
+    setSettings((st) => ({ ...st, renewAskedFor: target }));
+    setRenewInfo(null); promptedRef.current = false;
+    toast(`ลงคิว${ymLabel(target)} ${created.length} งาน${skipped ? ` · ข้ามวันที่ชน ${skipped} วัน` : ''}`, 'event_repeat');
+  };
+  const skipRenew = () => { setSettings((st) => ({ ...st, renewAskedFor: renewInfo.target })); setRenewInfo(null); promptedRef.current = false; };
+
+  /* ---------- แคนเซิล / กู้คืน / ปิดจ๊อบ (จากหน้ารายละเอียดงาน) ---------- */
+  const cancelGig = (g) => {
+    const doIt = (scope) => {
+      setGigs((p) => applyScope(p, g, { ...g, status: 'cancelled', preCancelStatus: g.status, updatedAt: Date.now() }, scope));
+      toast('แคนเซิลงานแล้ว — กู้คืนได้จากหน้ารายละเอียด', 'event_busy');
+    };
+    const group = g.recurringGroupId ? gigs.filter((x) => x.recurringGroupId === g.recurringGroupId).length : 0;
+    if (group > 1) askScope(g, 'cancel', doIt);
+    else setAction({ title: 'แคนเซิลงานนี้?', message: `${g.venueName} · ${fmtDateShort(g.date)} — งานจะแสดงแบบขีดฆ่าและไม่นับรายได้ (กู้คืนได้)`, actions: [{ label: 'แคนเซิลงาน', destructive: true, onClick: () => doIt('this') }] });
+  };
+  const restoreGig = (g) => {
+    setGigs((p) => p.map((x) => (x.id === g.id ? { ...x, status: x.preCancelStatus || 'confirmed', preCancelStatus: '', updatedAt: Date.now() } : x)));
+    toast('กู้คืนงานแล้ว', 'restore');
+  };
+  const saveCloseJob = (g, tips, paid) => {
+    setGigs((p) => p.map((x) => (x.id === g.id ? { ...x, tips, isPaid: paid, jobClosed: true, updatedAt: Date.now() } : x)));
+    setCloseJobId(null);
+    toast(`ปิดจ๊อบแล้ว · ได้รับคนละ ${fmtMoney(myIncome({ ...g, tips }))}${paid ? '' : ' (ยังไม่ได้รับค่าตัว)'}`, 'task_alt');
+  };
+
   /** หลังบันทึกงานติดปัญหา: เสนอเพิ่มนัด "เช็คปัญหา" ลง Google Calendar (12:00 น. ของ 2 วันก่อนงาน) */
   const offerIssueCalendar = (g) => {
-    if (g.status !== 'issue' || g.date < todayStr()) return;
+    if (!FOLLOWUP_DAYS[g.status] || g.date < todayStr()) return;
     const r = issueReminderAbs(g);
     setAction({
-      title: 'เพิ่มนัดเช็คปัญหาลง Google Calendar?',
-      message: `“${g.issueNote}” — ให้ปฏิทินเตือน ${fmtDateShort(absToParts(r).date)} ${absToTime(r)} น. เพื่อเช็คอีกครั้งก่อนงาน${g.venueName ? ` ที่ ${g.venueName}` : ''} (${fmtDateShort(g.date)})`,
+      title: g.status === 'pending' ? 'เพิ่มนัดตามคอนเฟิร์มลง Google Calendar?' : 'เพิ่มนัดเช็คปัญหาลง Google Calendar?',
+      message: `${g.status === 'pending' ? 'งานรอคอนเฟิร์ม' : `“${g.issueNote}”`} — ให้ปฏิทินเตือน ${fmtDateShort(absToParts(r).date)} ${absToTime(r)} น. เพื่อเช็คอีกครั้งก่อนงาน${g.venueName ? ` ที่ ${g.venueName}` : ''} (${fmtDateShort(g.date)})`,
       actions: [{ label: 'เพิ่มลง Google Calendar', bold: true, onClick: () => openUrl(issueCalendarUrl(g)) }],
     });
   };
   /** ปัญหาเคลียร์แล้ว → เปลี่ยนเป็นคอนเฟิร์ม และลบข้อความปัญหาทิ้ง (เฉพาะงานนั้น) */
   const resolveIssue = (g) => {
     setGigs((p) => p.map((x) => (x.id === g.id ? { ...x, status: 'confirmed', issueNote: '', updatedAt: Date.now() } : x)));
-    toast(`${g.venueName}: ปัญหาเคลียร์แล้ว → คอนเฟิร์ม`, 'check_circle');
+    toast(`${g.venueName}: ${g.status === 'pending' ? 'คอนเฟิร์มแล้ว' : 'ปัญหาเคลียร์แล้ว → คอนเฟิร์ม'}`, 'check_circle');
   };
 
-  const handleSave = ({ mode, original, data, rec }) => {
+  const handleSave = ({ mode, original, data, venueNote, dates, skipped = [] }) => {
     const ts = Date.now();
     if (mode === 'create') {
-      const dates = rec && rec.dates.length ? rec.dates : [data.date];
-      const gid = rec && dates.length > 1 ? uid() : null;
-      const created = dates.map((d, i) => closeRetro({ ...data, id: uid(), date: d, recurringGroupId: gid, tips: i === 0 ? data.tips : 0, isPaid: i === 0 ? data.isPaid : false, createdAt: ts, updatedAt: ts }));
+      const gid = data.gigType === 'regular' ? uid() : null;              // งานประจำ = ชุดเดียวกัน (ใช้ต่อสัญญารายเดือน + แก้ 3 ระดับ)
+      const created = dates.map((d) => closeRetro({ ...data, id: uid(), date: d, recurringGroupId: gid, tips: 0, isPaid: false, jobClosed: false, createdAt: ts, updatedAt: ts }));
       const retro = created.filter((g) => isPastDate(g.date) && g.status !== 'cancelled').length;
       setGigs((p) => [...p, ...created]);
-      rememberVenue(data);
+      rememberVenue(data, venueNote);
       rememberBandMembers([data]);
       setSheet(null);
-      toast((created.length > 1 ? `เพิ่มงานประจำ ${created.length} งานแล้ว` : 'เพิ่มคิวงานแล้ว') + (retro ? ` · ปิดจ๊อบย้อนหลัง ${retro} งาน` : ''));
+      toast((created.length > 1 ? `เพิ่มงานประจำ ${created.length} งานแล้ว` : 'เพิ่มคิวงานแล้ว') + (skipped.length ? ` · ข้ามวันที่ชน ${skipped.length} วัน` : '') + (retro ? ` · ปิดจ๊อบย้อนหลัง ${retro} งาน` : ''));
       if (created.length === 1) offerIssueCalendar(created[0]);
       return;
     }
@@ -2840,11 +3462,11 @@ function App({ user = null }) {
     const seriesChanged = SERIES_FIELDS.some((k) => updated[k] !== original[k]);
     const commit = (scope) => {
       setGigs((p) => applyScope(p, original, updated, scope));
-      rememberVenue(updated);
+      rememberVenue(updated, venueNote);
       rememberBandMembers([updated]);
       setSheet(null);
       toast(updated.status === 'cancelled' && original.status !== 'cancelled' ? 'แคนเซิลงานแล้ว' : 'บันทึกการแก้ไขแล้ว');
-      if (original.status !== 'issue' || original.issueNote !== updated.issueNote || original.date !== updated.date) offerIssueCalendar(updated);
+      if (original.status !== updated.status || original.issueNote !== updated.issueNote || original.date !== updated.date) offerIssueCalendar(updated);
     };
     if (groupSize > 1 && seriesChanged) {
       askScope(original, updated.status === 'cancelled' && original.status !== 'cancelled' ? 'cancel' : 'edit', commit);
@@ -2863,6 +3485,7 @@ function App({ user = null }) {
         return true;
       }));
       setSheet(null);
+      setDetailId(null);
       toast('ลบงานแล้ว', 'delete');
     };
     if (groupSize > 1) askScope(original, 'delete', doDelete);
@@ -2972,40 +3595,30 @@ function App({ user = null }) {
   const markPaid = (g) => { setGigs((p) => p.map((x) => (x.id === g.id ? { ...x, isPaid: true, updatedAt: Date.now() } : x))); toast(`รับเงิน ${fmtMoney(myIncome(g))} แล้ว`, 'paid'); };
 
   /* ---------- ลบบัญชีและข้อมูลถาวร (ยืนยัน 2 ชั้น) ---------- */
+  /** ลบข้อมูลทั้งหมดของแอปใน Google Drive + ยกเลิกสิทธิ์ที่ให้ GigFlow (บัญชี Google ไม่ถูกลบ) */
   const doDeleteAccount = async () => {
-    const cur = fbAuth?.currentUser;
-    if (!cur) return;
+    const ensure = tokenValid() ? Promise.resolve() : requestGoogleToken({ prompt: '', hint: user.email });   // เรียกทันทีตอนแตะ
+    sync.meta.current.disabled = true;           // กันไม่ให้ซิงก์สร้างไฟล์ขึ้นมาใหม่ระหว่างลบ
     try {
-      toast('กำลังลบบัญชี…', 'progress_activity');
-      // Firebase ต้องล็อกอินมาไม่นาน (~5 นาที) ถึงจะลบบัญชีได้ → ยืนยันตัวตนใหม่ก่อนลบข้อมูล (ถ้ายกเลิก จะไม่มีอะไรถูกลบ)
-      const last = Date.parse(cur.metadata?.lastSignInTime || 0) || 0;
-      if (Date.now() - last > 4 * 60 * 1000) {
-        const provider = new firebase.auth.GoogleAuthProvider();
-        provider.setCustomParameters({ login_hint: cur.email || '' });
-        await cur.reauthenticateWithPopup(provider);
-      }
-      const base = fbDb.collection('users').doc(cur.uid);
-      const snap = await base.collection('gigs').get();
-      const ops = snap.docs.map((d) => ({ type: 'del', ref: d.ref }));
-      ops.push({ type: 'del', ref: base.collection('meta').doc('venues') }, { type: 'del', ref: base.collection('meta').doc('settings') });
-      await commitOps(ops);
-      try { localStorage.removeItem(`gigflow.migrated.${cur.uid}`); } catch (e) {}
-      await cur.delete();                       // → onAuthStateChanged(null) → กลับหน้าล็อกอิน
+      await ensure;
+      toast('กำลังลบข้อมูล…', 'progress_activity');
+      const files = await Drive.list();
+      for (const f of files) await Drive.remove(f.id);
+      const tok = gAuth.token;
+      try { google.accounts.oauth2.revoke(tok, () => {}); } catch (e) {}
+      clearAccountCache(user.uid); clearToken(); onSignedOut();
     } catch (e) {
+      sync.meta.current.disabled = false;
       console.error(e);
-      const msg = e?.code === 'auth/popup-closed-by-user' || e?.code === 'auth/cancelled-popup-request' ? 'ยกเลิกการลบบัญชี — ไม่มีข้อมูลถูกลบ'
-        : e?.code === 'auth/popup-blocked' || e?.code === 'auth/operation-not-supported-in-this-environment' ? 'ยืนยันตัวตนไม่ได้ในโหมดแอป — เปิดผ่าน Safari แล้วลองใหม่'
-        : e?.code === 'auth/user-mismatch' ? 'ต้องยืนยันด้วยบัญชี Google เดิม'
-        : 'ลบบัญชีไม่สำเร็จ กรุณาลองใหม่';
-      toast(msg, 'error');
+      toast(e && e.code === 'popup_closed' ? 'ยกเลิก — ไม่มีข้อมูลถูกลบ' : e && e.code === 'offline' ? 'ออฟไลน์อยู่ — เชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่' : 'ลบข้อมูลไม่สำเร็จ กรุณาลองใหม่', 'error');
     }
   };
   const askDeleteAccount = () => setAction({
     title: 'ลบบัญชีและข้อมูลถาวร?',
-    message: `ข้อมูลทั้งหมดของ ${user?.email || 'บัญชีนี้'} — คิวงาน ${gigs.length} รายการ ร้านที่บันทึกไว้ และการตั้งค่า — จะถูกลบออกจากคลาวด์และทุกเครื่อง แล้วออกจากระบบ`,
+    message: `ข้อมูล GigFlow ทั้งหมดของ ${user?.email || 'บัญชีนี้'} — คิวงาน ${gigs.length} รายการ ร้านที่บันทึกไว้ และการตั้งค่า — จะถูกลบจาก Google Drive และทุกเครื่อง พร้อมยกเลิกสิทธิ์ที่ให้แอป แล้วออกจากระบบ (บัญชี Google ของคุณไม่ถูกลบ)`,
     actions: [{ label: 'ดำเนินการต่อ…', destructive: true, onClick: () => setAction({
       title: 'ยืนยันครั้งสุดท้าย: ลบถาวร กู้คืนไม่ได้',
-      message: 'แนะนำให้ Export สำรองข้อมูลเก็บไว้ก่อน ระบบจะขอให้ยืนยันบัญชี Google อีกครั้ง',
+      message: 'แนะนำให้ Export สำรองข้อมูลเก็บไว้ก่อน (อาจมีหน้าต่าง Google ให้ยืนยันบัญชีอีกครั้ง)',
       actions: [
         { label: 'Export สำรองข้อมูลก่อน', bold: true, onClick: handleExport },
         { label: 'ลบบัญชีและข้อมูลถาวร', destructive: true, onClick: doDeleteAccount },
@@ -3014,6 +3627,8 @@ function App({ user = null }) {
   });
 
   if (!sync.ready) return <Splash text="กำลังโหลดข้อมูลของคุณ…" />;
+  const detailGig = detailId ? gigs.find((g) => g.id === detailId) : null;
+  const closeJobGig = closeJobId ? gigs.find((g) => g.id === closeJobId) : null;
 
   const closeDrawerThen = (fn) => () => { setDrawerOpen(false); fn(); };
   return (
@@ -3025,9 +3640,9 @@ function App({ user = null }) {
             <Icon name="system_update" size={17} />มีอัปเดตใหม่ v{update.latest} — แตะเพื่อโหลด
           </button>
         )}
-        {tab === 'home' && <HomeView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onAdd={openCreate} onEdit={openEdit} onDemo={loadDemo} goTab={setTab} user={user} sync={sync} onAccount={() => setDrawerOpen(true)} onResolveIssue={resolveIssue} />}
-        {tab === 'schedule' && <ScheduleView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onAdd={openCreate} onEdit={openEdit} onLineShare={handleLineShare} />}
-        {tab === 'finance' && <FinanceView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onEdit={openEdit} onMarkPaid={markPaid} onBatch={() => setBatchOpen(true)} onExport={handleExport} onImport={handleImport} onDemo={loadDemo} onClear={clearAll} user={user} openPastCount={openPast.length} onClosePast={askClosePast} />}
+        {tab === 'home' && <HomeView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onAdd={openCreate} onEdit={openDetail} onDemo={loadDemo} goTab={setTab} user={user} sync={sync} onAccount={() => setDrawerOpen(true)} onResolveIssue={resolveIssue} />}
+        {tab === 'schedule' && <ScheduleView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onAdd={openCreate} onEdit={openDetail} onLineShare={handleLineShare} />}
+        {tab === 'finance' && <FinanceView gigs={gigs} now={now} theme={theme} setTheme={setTheme} onEdit={openDetail} onMarkPaid={markPaid} onBatch={() => setBatchOpen(true)} onExport={handleExport} onImport={handleImport} onDemo={loadDemo} onClear={clearAll} user={user} openPastCount={openPast.length} onClosePast={askClosePast} />}
       </main>
       <TabBar tab={tab} setTab={setTab} onAdd={() => openCreate()} />
       {drawerOpen && (
@@ -3039,9 +3654,13 @@ function App({ user = null }) {
           onSignOut={closeDrawerThen(askSignOut)}
           onDeleteAccount={closeDrawerThen(askDeleteAccount)} />
       )}
-      {settingsOpen && <SettingsSheet settings={settings} onClose={() => setSettingsOpen(false)} onSave={(s) => { setSettings(s); setSettingsOpen(false); toast('บันทึกการตั้งค่าแล้ว'); }} />}
+      {settingsOpen && <SettingsSheet settings={settings} presets={presets} profiles={profiles} onEditVenue={setVenueEdit} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
       {installOpen && <InstallSheet install={install} onClose={() => setInstallOpen(false)} />}
-      {sheet && <GigSheet key={sheet.key} mode={sheet.mode} initial={sheet.gig} gigs={gigs} presets={presets} bands={bands} settings={settings} onUpdateSettings={(patch) => setSettings((st) => normalizeSettings({ ...st, ...patch }))} onDeleteVenue={askDeleteVenue} onClose={() => setSheet(null)} onSave={handleSave} onDelete={handleDelete} toast={toast} />}
+      {detailGig && <GigDetail gig={detailGig} profile={profiles[detailGig.venueName]} now={now} onClose={() => setDetailId(null)} onEdit={() => openEdit(detailGig)} onCopy={() => openCopy(detailGig)} onCloseJob={(g) => setCloseJobId(g.id)} onCancel={cancelGig} onRestore={restoreGig} onResolve={resolveIssue} />}
+      {sheet && <GigForm key={sheet.key} mode={sheet.mode} initial={sheet.gig} gigs={gigs} profiles={profiles} bands={bands} settings={settings} onUpdateSettings={(patch) => setSettings((st) => normalizeSettings({ ...st, ...patch }))} onClose={() => setSheet(null)} onSave={handleSave} onDelete={handleDelete} toast={toast} />}
+      {closeJobGig && <CloseJobSheet gig={closeJobGig} onClose={() => setCloseJobId(null)} onSave={saveCloseJob} />}
+      {venueEdit && profiles[venueEdit] && <VenueDefaultsSheet profile={profiles[venueEdit]} gigs={gigs} settings={settings} onClose={() => setVenueEdit(null)} onApply={applyVenueDefaults} />}
+      {renewInfo && <RenewSheet target={renewInfo.target} candidates={renewInfo.candidates} onConfirm={confirmRenew} onSkip={skipRenew} />}
       {venueSheetOpen && <VenueSheet presets={presets} onClose={() => setVenueSheetOpen(false)} onDelete={askDeleteVenue} />}
       {batchOpen && <BatchSheet gigs={gigs} presets={presets} bands={bands} mainBands={settings.bands} bandMembers={settings.bandMembers} onClose={() => setBatchOpen(false)} onSave={handleBatchSave} />}
       <ActionSheet config={action} onClose={() => setAction(null)} />
@@ -3052,31 +3671,19 @@ function App({ user = null }) {
 }
 
 // expose pure logic for self-tests in the console: window.GigFlowLogic
-window.GigFlowLogic = { gigRange, findIssues, genRecurringDates, applyScope, computeStats, calendarUrl, mapsDirUrl, buildLineText, makeDemo, sumMoney, parseMoney, parseLatLng, routeTargetFromUrl, issueCalendarUrl, issueReminderAbs, needsIssueCheck, normalizeGig, cmpVer };
+window.GigFlowLogic = { findPlusCode, olcDecode, olcEncodePairs, olcRecoverNearest, resolveMapRef, mapRefStatus, isMapRef, mergeSyncData, gigRange, findIssues, genRecurringDates, applyScope, computeStats, calendarUrl, mapsDirUrl, buildLineText, makeDemo, sumMoney, parseMoney, parseLatLng, routeTargetFromUrl, issueCalendarUrl, issueReminderAbs, needsIssueCheck, normalizeGig, cmpVer };
 
 /* =====================================================================
-   ROOT: ถ้าตั้งค่า Firebase แล้ว → ต้องล็อกอินด้วย Google ก่อนใช้งาน (ข้อมูลแยกตามบัญชี)
+   ROOT: ถ้าใส่ Google Client ID แล้ว → ต้องล็อกอินด้วย Google ก่อนใช้งาน (ข้อมูลแยกตามบัญชี เก็บใน Drive ของแต่ละคน)
    ===================================================================== */
 function AuthGate() {
-  const [st, setSt] = useAuthState();
-  const setError = (error) => setSt((s) => ({ ...s, error }));
-  if (st.status === 'loading') return <Splash />;
-  if (st.status === 'out') return <LoginScreen error={st.error} setError={setError} />;
-  return <App key={st.user.uid} user={st.user} />;
+  const [account, setAccount] = useState(loadSession);
+  const [error, setError] = useState(null);
+  if (!account) return <LoginScreen error={error} setError={setError} onSignedIn={(a) => { saveSession(a); setAccount(a); }} />;
+  return <App key={account.uid} user={account} onSignedOut={() => { saveSession(null); setAccount(null); }} />;
 }
 function Root() {
-  if (!CLOUD_CONFIGURED) return <App />;
-  if (!fbAuth) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-8 text-center">
-        <AppLogo size={72} />
-        <div className="text-[17px] font-semibold">โหลดระบบล็อกอินไม่สำเร็จ</div>
-        <div className="text-[14px] text-[#8E8E93]">กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต หรือค่า Firebase config ในไฟล์ index.html</div>
-        <button onClick={() => location.reload()} className="h-11 px-6 rounded-full bg-[#5856D6] text-white font-semibold">ลองใหม่</button>
-      </div>
-    );
-  }
-  return <AuthGate />;
+  return CLOUD_CONFIGURED ? <AuthGate /> : <App />;
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
